@@ -1,0 +1,188 @@
+name: "everyrole: does my app still work?"
+description: "Plain-English end-to-end checks on every deploy. Flows live in your repo as JSON; bring your own AI key."
+author: "everyrole"
+branding:
+  icon: "check-circle"
+  color: "green"
+
+inputs:
+  base-url:
+    description: "Deployed URL to test (e.g. the Vercel preview URL). Available to flows as {{BASE_URL}}."
+    required: true
+  flows:
+    description: "Flow files or directories, space-separated, relative to the repository root."
+    required: false
+    default: "flows"
+  config:
+    description: "Path to everyrole.config.json (user types, sign-in, access rules). Empty = ./everyrole.config.json if it exists."
+    required: false
+    default: ""
+  environment:
+    description: "Only run flows whose run_on includes this (flows without run_on always run)."
+    required: false
+    default: "preview"
+  parallel:
+    description: "Flows run at the same time."
+    required: false
+    default: "3"
+  videos:
+    description: "Record a replay video of every flow (installs ffmpeg on Linux runners when missing)."
+    required: false
+    default: "true"
+  comment:
+    description: "Post or update one pull-request comment with the results."
+    required: false
+    default: "true"
+  fail-on-machine-problem:
+    description: >-
+      When nothing could be checked because of a problem on the test machine (Chrome, model provider, keys),
+      fail the job ("true", the default) or only warn ("false"). Either way it is reported as a machine
+      problem, never as an app failure.
+    required: false
+    default: "true"
+  artifact-name:
+    description: "Name of the uploaded report artifact (set a unique one when several jobs use this action)."
+    required: false
+    default: "everyrole-report"
+  python-version:
+    description: "Python used to run EveryRole (3.12 or newer)."
+    required: false
+    default: "3.12"
+
+outputs:
+  report-dir:
+    description: "Directory with results.json, summary.md, junit.xml, failure screenshots and replay videos."
+    value: ${{ steps.run.outputs.report-dir }}
+  result:
+    description: "passed | failed (the app failed a check) | not-checked (machine problem or setup error)"
+    value: ${{ steps.run.outputs.result }}
+  exit-code:
+    description: "Exit code of everyrole run: 0 passed, 1 app failure, 2 nothing could be checked."
+    value: ${{ steps.run.outputs.exit-code }}
+
+runs:
+  using: "composite"
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install everyrole
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      run: python -m pip install --quiet --disable-pip-version-check "$ACTION_PATH"
+
+    - name: Find Chrome
+      id: find-chrome
+      shell: bash
+      run: |
+        if found=$(python -c "from everyrole.chrome import find_chrome; print(find_chrome())" 2>/dev/null); then
+          echo "path=$found" >> "$GITHUB_OUTPUT"
+          echo "Using Chrome at $found"
+        else
+          echo "No Chrome on this runner; installing one."
+        fi
+
+    - name: Install Chrome
+      id: setup-chrome
+      if: steps.find-chrome.outputs.path == ''
+      uses: browser-actions/setup-chrome@v1
+
+    - name: Prepare the runner
+      shell: bash
+      env:
+        FOUND_CHROME: ${{ steps.find-chrome.outputs.path }}
+        INSTALLED_CHROME: ${{ steps.setup-chrome.outputs.chrome-path }}
+        INPUT_VIDEOS: ${{ inputs.videos }}
+      run: |
+        echo "CHROME_PATH=${FOUND_CHROME:-$INSTALLED_CHROME}" >> "$GITHUB_ENV"
+        if [ "$RUNNER_OS" = "Linux" ]; then
+          # Ubuntu 24.04 restricts the unprivileged user namespaces Chrome's sandbox needs.
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -q -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          fi
+        fi
+        if [ "$INPUT_VIDEOS" = "true" ] && ! command -v ffmpeg > /dev/null; then
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg > /dev/null
+          else
+            echo "::warning title=everyrole::ffmpeg not found; replay videos are skipped (screenshots are kept)."
+          fi
+        fi
+
+    - name: Run flows
+      id: run
+      shell: bash
+      env:
+        INPUT_BASE_URL: ${{ inputs.base-url }}
+        INPUT_FLOWS: ${{ inputs.flows }}
+        INPUT_CONFIG: ${{ inputs.config }}
+        INPUT_ENVIRONMENT: ${{ inputs.environment }}
+        INPUT_PARALLEL: ${{ inputs.parallel }}
+        INPUT_VIDEOS: ${{ inputs.videos }}
+        PYTHONUTF8: "1"
+      run: |
+        report="$RUNNER_TEMP/everyrole-report"
+        echo "report-dir=$report" >> "$GITHUB_OUTPUT"
+        options=()
+        if [ -n "$INPUT_CONFIG" ]; then options+=(--config "$INPUT_CONFIG"); fi
+        if [ "$INPUT_VIDEOS" = "true" ]; then options+=(--videos); fi
+        set +e
+        # shellcheck disable=SC2086  # flows is an intentional space-separated list
+        everyrole run $INPUT_FLOWS --base-url "$INPUT_BASE_URL" --env "$INPUT_ENVIRONMENT" \
+          --parallel "$INPUT_PARALLEL" --output "$report" "${options[@]}"
+        status=$?
+        set -e
+        echo "exit-code=$status" >> "$GITHUB_OUTPUT"
+        case "$status" in
+          0) echo "result=passed" >> "$GITHUB_OUTPUT" ;;
+          1) echo "result=failed" >> "$GITHUB_OUTPUT" ;;
+          *) echo "result=not-checked" >> "$GITHUB_OUTPUT" ;;
+        esac
+        if [ -f "$report/summary.md" ]; then cat "$report/summary.md" >> "$GITHUB_STEP_SUMMARY"; fi
+
+    - name: Upload report and replay videos
+      if: always() && steps.run.outputs.report-dir != ''
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ steps.run.outputs.report-dir }}
+        if-no-files-found: ignore
+
+    - name: Comment on the pull request
+      if: always() && inputs.comment == 'true' && steps.run.outputs.report-dir != ''
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+        REPORT_DIR: ${{ steps.run.outputs.report-dir }}
+      run: |
+        if [ ! -f "$REPORT_DIR/summary.md" ]; then
+          echo "No report to post (EveryRole stopped before running any check)."
+          exit 0
+        fi
+        run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+        { cat "$REPORT_DIR/summary.md"; echo; echo "[Replay videos and full report]($run_url)"; } > "$RUNNER_TEMP/everyrole-comment.md"
+        everyrole comment --report "$RUNNER_TEMP/everyrole-comment.md"
+
+    - name: Result
+      if: always() && steps.run.outputs.exit-code != ''
+      shell: bash
+      env:
+        STATUS: ${{ steps.run.outputs.exit-code }}
+        FAIL_ON_MACHINE_PROBLEM: ${{ inputs.fail-on-machine-problem }}
+      run: |
+        case "$STATUS" in
+          0)
+            echo "everyrole: nothing broken found." ;;
+          1)
+            echo "::error title=everyrole: your app failed a check::See the job summary or the PR comment for which check failed, for which user type, and at which step."
+            exit 1 ;;
+          *)
+            message="Nothing could be checked. This is a problem on the test machine or in the EveryRole setup (Chrome, model provider, API keys, flow files), not in your app. The log of the Run flows step says what went wrong."
+            if [ "$FAIL_ON_MACHINE_PROBLEM" = "true" ]; then
+              echo "::error title=EveryRole could not check your app (not an app failure)::$message"
+              exit 2
+            fi
+            echo "::warning title=EveryRole could not check your app (not an app failure)::$message" ;;
+        esac

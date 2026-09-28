@@ -1,0 +1,55 @@
+# Copy to .github/workflows/everyrole.yml in your app's repository.
+#
+# Runs your flows against every successful preview deployment. Vercel (and Netlify, Render, Railway...)
+# report deployments to GitHub, which fires `deployment_status` with the deployment's URL.
+# Results land in one pull-request comment (updated in place), the job summary, and an artifact with
+# the full report and a replay video of every flow.
+#
+# Repository settings -> Secrets and variables -> Actions:
+#   secrets:   TYPESAFE_API_KEY, TEXT_MODEL_API_KEY (optional), and your test accounts (QA_EMAIL, QA_PASSWORD...)
+#   variables: TYPESAFE_URL, TYPESAFE_MODEL, TEXT_MODEL_BASE_URL, TEXT_MODEL (see .env.example)
+name: everyrole
+
+on:
+  deployment_status:
+
+permissions:
+  contents: read
+  pull-requests: write   # one results comment per pull request, updated in place
+  issues: write          # PR comments go through the issues API
+  deployments: read
+
+concurrency:
+  group: everyrole-${{ github.event.deployment.sha }}-${{ github.event.deployment.environment }}
+  cancel-in-progress: true
+
+jobs:
+  flows:
+    # Only finished deployments that have a URL. Vercel names preview environments "Preview"
+    # (or "Preview – <project>") and production "Production".
+    if: >-
+      github.event.deployment_status.state == 'success' &&
+      github.event.deployment_status.environment_url != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.deployment.sha }}
+
+      - uses: mkraiemm/everyrole@v0
+        with:
+          base-url: ${{ github.event.deployment_status.environment_url }}
+          flows: flows
+          environment: ${{ startsWith(github.event.deployment.environment, 'Production') && 'production' || 'preview' }}
+        env:
+          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+          TYPESAFE_URL: ${{ vars.TYPESAFE_URL }}
+          TYPESAFE_MODEL: ${{ vars.TYPESAFE_MODEL }}
+          TEXT_MODEL_API_KEY: ${{ secrets.TEXT_MODEL_API_KEY }}
+          TEXT_MODEL_BASE_URL: ${{ vars.TEXT_MODEL_BASE_URL }}
+          TEXT_MODEL: ${{ vars.TEXT_MODEL }}
+          TEXT_MODEL_REASONING: ${{ vars.TEXT_MODEL_REASONING }}
+          # Every {{secrets.NAME}} your flows and user types use:
+          QA_EMAIL: ${{ secrets.QA_EMAIL }}
+          QA_PASSWORD: ${{ secrets.QA_PASSWORD }}

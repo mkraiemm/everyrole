@@ -1,0 +1,13 @@
+{
+  "$schema": "../../../everyrole/schema/flow.schema.json",
+  "name": "guest-compares-plans",
+  "title": "A visitor can compare plans before signing up",
+  "start": "{{BASE_URL}}/",
+  "goal": "Find the pricing page and look at the Pro plan.",
+  "expect": [
+    { "url_contains": "/pricing" },
+    { "text_visible": "Pro" },
+    { "element_visible": "Start free trial" }
+  ],
+  "forbid": ["Buy", "Subscribe", "Pay"]
+}

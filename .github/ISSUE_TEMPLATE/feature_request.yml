@@ -1,0 +1,20 @@
+name: Feature request
+description: An idea for the flow format, the CLI or the GitHub Action
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to check, and what gets in the way today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like
+      description: For flow-format changes, show the JSON you would like to write.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered

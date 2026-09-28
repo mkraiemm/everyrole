@@ -1,0 +1,13 @@
+.env
+.venv*/
+__pycache__/
+artifacts/
+*.pyc
+**/.env
+!.env.example
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+everyrole-report/

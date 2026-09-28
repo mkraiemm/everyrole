@@ -1,0 +1,14 @@
+{
+  "$schema": "../../../everyrole/schema/flow.schema.json",
+  "name": "invite-teammate-form",
+  "title": "The invite form submits (no invitation is sent)",
+  "as": "admin",
+  "start": "{{BASE_URL}}/admin/users",
+  "goal": "Invite a new teammate using the invitee email value.",
+  "values": { "invitee_email": "everyrole-{{RUN_ID}}@example.com" },
+  "block_writes": true,
+  "ignore_saves": ["/api/telemetry"],
+  "expect": [{ "tried_to_save": "/api/invitations" }],
+  "forbid": ["Remove", "Delete", "Sign out"],
+  "run_on": ["preview"]
+}

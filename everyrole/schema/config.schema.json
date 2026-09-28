@@ -1,0 +1,346 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mkraiemm/everyrole/schema/config.schema.json",
+  "title": "everyrole config",
+  "description": "App-level settings: how to sign in, which user types (personas) exist, and who may open which pages.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "login": {
+      "type": "object",
+      "description": "How a persona signs in. Runs once per persona per suite; its session is reused by every flow.",
+      "additionalProperties": false,
+      "required": [
+        "start",
+        "goal",
+        "expect"
+      ],
+      "properties": {
+        "start": {
+          "type": "string",
+          "minLength": 1
+        },
+        "goal": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expect": {
+          "$ref": "flow.schema.json#/$defs/checks"
+        },
+        "forbid": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": []
+        },
+        "max_steps": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 60,
+          "default": 12
+        },
+        "timeout_s": {
+          "type": "integer",
+          "minimum": 5,
+          "maximum": 600,
+          "default": 60
+        },
+        "settle_s": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 30,
+          "default": 5
+        }
+      }
+    },
+    "personas": {
+      "type": "object",
+      "description": "User types. `values` are typed by the runner (secrets never reach a model). `login: false` = signed out.",
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]{0,31}$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "values": {
+            "type": "object",
+            "propertyNames": {
+              "pattern": "^[a-z][a-z0-9_]{0,31}$"
+            },
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": {}
+          },
+          "login": {
+            "type": "boolean",
+            "default": true
+          },
+          "start_paths": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^([a-z][a-z0-9_]*:)?/"
+            },
+            "default": [],
+            "description": "Where this user type's own area starts (e.g. /admin), explored before anything else. Read by EveryRole's exploration tools (not part of this package); everyrole run ignores it."
+          },
+          "saved_signin": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "file"
+            ],
+            "properties": {
+              "file": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Session file (cookies + local storage) saved after a person signed in by hand."
+              },
+              "check": {
+                "type": "string",
+                "pattern": "^([a-z][a-z0-9_]*:)?/",
+                "description": "A signed-in page; if opening it sends the browser to sign-in, the sign-in expired."
+              },
+              "saved_at": {
+                "type": "number"
+              }
+            },
+            "description": "Use a sign-in a person did by hand (e.g. to pass a security check) instead of typing a password."
+          }
+        }
+      },
+      "default": {}
+    },
+    "environments": {
+      "type": "object",
+      "description": "Where the app lives in each environment: environment -> {part: address}. The first part is the main one (its pages are plain paths, e.g. /dashboard); pages of another part are written part:/path (e.g. site:/privacy) and flows start there with {{URL.part}}. Every environment lists the same parts. Without this, the app is one address given with --base-url.",
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "minProperties": 1,
+        "propertyNames": {
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "additionalProperties": {
+          "type": "string",
+          "pattern": "^https?://[^/?#]+"
+        }
+      }
+    },
+    "access": {
+      "type": "object",
+      "description": "Access matrix, checked WITHOUT any model: page (/path, or part:/path on another part of the app) -> which personas may and may not open it.",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "allow": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": []
+          },
+          "deny": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": []
+          }
+        }
+      },
+      "default": {}
+    },
+    "denied_when": {
+      "$ref": "flow.schema.json#/$defs/checks",
+      "description": "Extra refusal signals, for apps that refuse in place (e.g. a \"no access\" message). Being redirected away from the requested page always counts as a refusal."
+    },
+    "access_settle_s": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 30,
+      "default": 5,
+      "description": "How long to wait for redirects before deciding allowed/denied."
+    },
+    "discover": {
+      "type": "object",
+      "description": "Read-only exploration by EveryRole's exploration tools (not part of this package). Accepted so one config file works everywhere; everyrole run and everyrole validate ignore it.",
+      "additionalProperties": false,
+      "properties": {
+        "start_paths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^([a-z][a-z0-9_]*:)?/"
+          },
+          "default": [
+            "/"
+          ],
+          "description": "Where exploration starts. Signed-in personas also start where their login lands."
+        },
+        "max_pages": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200,
+          "default": 20,
+          "description": "Pages visited per persona."
+        },
+        "max_depth": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5,
+          "default": 3,
+          "description": "Link hops from a start page."
+        },
+        "forbid": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": [],
+          "description": "Extra words; links matching these or the login `forbid` are never followed."
+        },
+        "max_proposals": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 30,
+          "default": 8,
+          "description": "Tests the author model drafts for each kind of user (its own pages and actions), and again for journeys across kinds of user."
+        },
+        "author_parallel": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16,
+          "default": 4,
+          "description": "Drafting calls to the author model at the same time (each covers a batch of one kind of user's pages)."
+        },
+        "author_timeout_s": {
+          "type": "integer",
+          "minimum": 30,
+          "maximum": 900,
+          "default": 240,
+          "description": "How long one drafting call may take before it counts as failed."
+        },
+        "page_settle_s": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 30,
+          "default": 8,
+          "description": "Longest wait for a page to finish loading its data (its text stops changing) before it is read and photographed."
+        },
+        "probe": {
+          "type": "boolean",
+          "default": true,
+          "description": "Click buttons to see what they open (forms, panels), with writes blocked."
+        },
+        "max_probes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 200,
+          "default": 25,
+          "description": "Buttons clicked per user type while exploring."
+        },
+        "weigh_ahead": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50,
+          "default": 8,
+          "description": "Pages weighed (one plain request each, no pictures or videos) before choosing which to open next: the lightest opens first, heavy pages last. 1 = open pages in the order they were found."
+        }
+      },
+      "default": {}
+    },
+    "run": {
+      "type": "object",
+      "description": "How a run goes.",
+      "additionalProperties": false,
+      "properties": {
+        "parallel": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8,
+          "default": 3,
+          "description": "Tests (and sign-ins, and page-access checks) run at the same time. More is faster and asks more of this computer and of the app."
+        },
+        "access_batch": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50,
+          "default": 8,
+          "description": "Pages one page-access check opens at once (each in its own tab). A kind of user with more pages gets several checks, run at the same time like tests."
+        },
+        "limits": {
+          "type": "object",
+          "description": "How much of this computer a test job may use. The operating system holds the job to it (a job object on Windows, a cgroup on Linux) and new tests wait for room instead of piling up.",
+          "additionalProperties": false,
+          "properties": {
+            "memory_percent": {
+              "type": "number",
+              "minimum": 5,
+              "maximum": 95,
+              "default": 50,
+              "description": "Share of this computer's memory (or of its container's) for the job: every browser and worker together."
+            },
+            "cpu_percent": {
+              "type": "number",
+              "minimum": 5,
+              "maximum": 100,
+              "default": 50,
+              "description": "Share of all this computer's cores for the job."
+            }
+          },
+          "default": {}
+        },
+        "network": {
+          "type": "object",
+          "description": "How hard a job may use the network it runs on. Pages start as fast as they finish (the recent median load time divided by the pages at once), within the gap limits below, so a slow network slows the job instead of the job taking the network down.",
+          "additionalProperties": false,
+          "properties": {
+            "pages_at_once": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 20,
+              "default": 3,
+              "description": "Pages loading at the same time in the whole job (every worker, tab and kind of user together)."
+            },
+            "min_gap_s": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 60,
+              "default": 1,
+              "description": "Shortest wait between two new pages, however fast the network is."
+            },
+            "max_gap_s": {
+              "type": "number",
+              "minimum": 1,
+              "maximum": 120,
+              "default": 15,
+              "description": "Longest wait between two new pages, however slow the network gets."
+            },
+            "page_timeout_s": {
+              "type": "number",
+              "minimum": 10,
+              "maximum": 600,
+              "default": 60,
+              "description": "A page still loading after this long gives its place back."
+            }
+          },
+          "default": {}
+        }
+      },
+      "default": {}
+    }
+  }
+}

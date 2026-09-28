@@ -1,0 +1,74 @@
+[project]
+name = "everyrole"
+version = "0.1.0"
+description = "Plain-English end-to-end tests for every kind of user, on every deploy."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE", "engine/LICENSE"]
+requires-python = ">=3.12"
+authors = [{ name = "the EveryRole authors" }]
+keywords = ["e2e", "end-to-end testing", "browser testing", "qa", "ai agent", "github action", "preview deploys",
+            "regression testing", "access control", "chrome"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Testing",
+    "Topic :: Software Development :: Testing :: Acceptance",
+]
+dependencies = [
+    "browser-harness==0.1.13",
+    "httpx[http2]>=0.28,<1",
+    "jsonschema>=4.23,<5",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.4,<10", "ruff>=0.14,<1", "build>=1.2"]
+docs = ["markdown>=3.5"]  # scripts/render_pr_comment.py
+
+[project.urls]
+Homepage = "https://github.com/mkraiemm/everyrole"
+Documentation = "https://github.com/mkraiemm/everyrole#readme"
+Repository = "https://github.com/mkraiemm/everyrole"
+Issues = "https://github.com/mkraiemm/everyrole/issues"
+Changelog = "https://github.com/mkraiemm/everyrole/blob/main/CHANGELOG.md"
+
+[project.scripts]
+everyrole = "everyrole.cli:main"
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+# Editable installs put both the app and the vendored engine on sys.path.
+dev-mode-dirs = [".", "engine"]
+
+[tool.hatch.build.targets.wheel]
+# Package data (schema/*.json, challenges.json, snapshot.js) ships with the packages.
+packages = ["everyrole", "engine/jev_ultrafast"]
+
+[tool.hatch.build.targets.sdist]
+# An explicit list, so nothing local (.env, reports, virtualenvs) can end up in a release.
+include = [
+    "/everyrole", "/engine", "/tests", "/docs", "/examples", "/fixtures", "/scripts", "/action.yml", "/README.md",
+    "/LICENSE", "/AGENTS.md", "/CHANGELOG.md", "/CONTRIBUTING.md", "/SECURITY.md", "/CODE_OF_CONDUCT.md",
+    "/.env.example", "/pyproject.toml",
+]
+exclude = ["__pycache__", "*.pyc"]
+
+[tool.ruff]
+line-length = 120
+extend-exclude = ["engine"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

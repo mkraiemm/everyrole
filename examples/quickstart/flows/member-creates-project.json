@@ -1,0 +1,18 @@
+{
+  "$schema": "../../../everyrole/schema/flow.schema.json",
+  "name": "member-creates-project",
+  "title": "The new-project form submits (nothing is saved)",
+  "as": "member",
+  "start": "{{BASE_URL}}/app.html",
+  "goal": "Create a new project using the project name value.",
+  "values": { "project_name": "Quarterly review {{RUN_ID}}" },
+  "block_writes": true,
+  "ignore_saves": ["/api/metrics"],
+  "expect": [
+    { "text_visible": "Create a project" },
+    { "tried_to_save": "/api/projects" }
+  ],
+  "forbid": ["Delete", "Sign out"],
+  "max_steps": 10,
+  "timeout_s": 90
+}

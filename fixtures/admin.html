@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Admin · Acme Notes</title>
+<link rel="stylesheet" href="style.css">
+<script>
+  // Only admins may stay. The demo has no admin accounts, so everyone is sent away.
+  if (localStorage.getItem("acme-role") !== "admin") {
+    location.replace(localStorage.getItem("acme-user") ? "app.html" : "login.html");
+  }
+</script>
+</head>
+<body>
+<h1>Admin</h1>
+<p>Every user in the workspace.</p>
+</body>
+</html>

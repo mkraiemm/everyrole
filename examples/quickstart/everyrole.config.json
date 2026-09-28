@@ -1,0 +1,23 @@
+{
+  "$schema": "../../everyrole/schema/config.schema.json",
+  "login": {
+    "start": "{{BASE_URL}}/login.html",
+    "goal": "Sign in with the account's email and password.",
+    "expect": [
+      { "url_contains": "/app.html" },
+      { "text_visible": "Signed in as" }
+    ],
+    "forbid": ["Delete", "Sign out"]
+  },
+  "personas": {
+    "member": {
+      "values": { "email": "{{secrets.DEMO_EMAIL}}", "password": "{{secrets.DEMO_PASSWORD}}" }
+    },
+    "guest": { "login": false }
+  },
+  "access": {
+    "/pricing.html": { "allow": ["guest", "member"] },
+    "/app.html": { "allow": ["member"], "deny": ["guest"] },
+    "/admin.html": { "deny": ["guest", "member"] }
+  }
+}

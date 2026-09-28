@@ -1,0 +1,17 @@
+{
+  "$schema": "../../../everyrole/schema/flow.schema.json",
+  "name": "reports-by-plan",
+  "title": "Pro users can export a report; free users are asked to upgrade",
+  "start": "{{BASE_URL}}/dashboard",
+  "goal": "Open the reports area and export the monthly report as CSV.",
+  "as": {
+    "pro": {
+      "expect": [{ "url_contains": "/reports" }, { "element_visible": "Export CSV" }]
+    },
+    "free": {
+      "expect_denied": true,
+      "expect": [{ "text_visible": "Upgrade to Pro" }, { "element_absent": "Export CSV" }]
+    }
+  },
+  "forbid": ["Upgrade now", "Delete", "Sign out"]
+}

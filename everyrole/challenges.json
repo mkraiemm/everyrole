@@ -1,0 +1,10 @@
+{
+  "description": "Security checks (CAPTCHAs) a person must pass by hand. Each is recognised by where its frame or script is loaded from. everyrole never tries to solve one: it reports 'sign in yourself' instead.",
+  "providers": [
+    {"name": "Cloudflare Turnstile", "sources": ["challenges.cloudflare.com"]},
+    {"name": "Google reCAPTCHA", "sources": ["google.com/recaptcha", "recaptcha.net", "gstatic.com/recaptcha"]},
+    {"name": "hCaptcha", "sources": ["hcaptcha.com"]},
+    {"name": "Arkose Labs (FunCaptcha)", "sources": ["arkoselabs.com", "funcaptcha.com"]},
+    {"name": "AWS WAF CAPTCHA", "sources": ["awswaf.com"]}
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "$schema": "../../../everyrole/schema/flow.schema.json",
+  "name": "public-pricing",
+  "title": "A visitor can find the plans from the home page",
+  "start": "{{BASE_URL}}/index.html",
+  "goal": "Open the pricing page.",
+  "expect": [
+    { "url_contains": "/pricing.html" },
+    { "text_visible": "Team" },
+    { "text_visible": "$12 per user per month" }
+  ],
+  "max_steps": 6,
+  "timeout_s": 60
+}

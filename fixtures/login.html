@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Sign in · Acme Notes</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<nav><a href="index.html">Home</a><a href="pricing.html">Pricing</a></nav>
+<h1>Sign in</h1>
+<form id="form" novalidate>
+  <label for="email">Email</label>
+  <input id="email" type="email" autocomplete="username" placeholder="you@company.com">
+  <label for="password">Password</label>
+  <input id="password" type="password" autocomplete="current-password" placeholder="Password">
+  <p id="error" class="error" hidden></p>
+  <button type="submit">Sign in</button>
+</form>
+<script>
+  // Demo only: any email with an @ and any password of 8+ characters signs in. The "session" lives in
+  // localStorage, which EveryRole captures once per user type and restores into every later test.
+  document.getElementById("form").addEventListener("submit", event => {
+    event.preventDefault();
+    const email = document.getElementById("email").value.trim();
+    const password = document.getElementById("password").value;
+    const error = document.getElementById("error");
+    if (!email.includes("@") || password.length < 8) {
+      error.textContent = "Enter your email and a password of at least 8 characters.";
+      error.hidden = false;
+      return;
+    }
+    localStorage.setItem("acme-user", email);
+    location.href = "app.html";
+  });
+</script>
+</body>
+</html>

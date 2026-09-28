@@ -1,0 +1,15 @@
+{
+  "$schema": "../../../everyrole/schema/flow.schema.json",
+  "name": "member-opens-project",
+  "title": "A signed-in member can open one of their projects",
+  "as": "member",
+  "start": "{{BASE_URL}}/app.html",
+  "goal": "Open the project called Launch plan.",
+  "expect": [
+    { "url_contains": "#/projects/launch-plan" },
+    { "text_visible": "Opened project: Launch plan" }
+  ],
+  "forbid": ["Delete", "Sign out"],
+  "max_steps": 6,
+  "timeout_s": 60
+}

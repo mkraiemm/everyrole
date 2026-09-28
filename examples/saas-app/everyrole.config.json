@@ -1,0 +1,35 @@
+{
+  "$schema": "../../everyrole/schema/config.schema.json",
+  "login": {
+    "start": "{{BASE_URL}}/login",
+    "goal": "Sign in with the account's email and password.",
+    "expect": [{ "url_contains": "/dashboard" }],
+    "forbid": ["Delete", "Sign out", "Log out"],
+    "max_steps": 12,
+    "timeout_s": 60
+  },
+  "personas": {
+    "admin": {
+      "values": { "email": "{{secrets.ADMIN_EMAIL}}", "password": "{{secrets.ADMIN_PASSWORD}}" }
+    },
+    "pro": {
+      "values": { "email": "{{secrets.PRO_EMAIL}}", "password": "{{secrets.PRO_PASSWORD}}" }
+    },
+    "free": {
+      "values": { "email": "{{secrets.FREE_EMAIL}}", "password": "{{secrets.FREE_PASSWORD}}" }
+    },
+    "guest": { "login": false }
+  },
+  "access": {
+    "/pricing": { "allow": ["guest", "free", "pro", "admin"] },
+    "/dashboard": { "allow": ["free", "pro", "admin"], "deny": ["guest"] },
+    "/reports": { "allow": ["pro", "admin"], "deny": ["free", "guest"] },
+    "/settings/billing": { "allow": ["free", "pro", "admin"], "deny": ["guest"] },
+    "/admin": { "allow": ["admin"], "deny": ["pro", "free", "guest"] },
+    "/admin/users": { "allow": ["admin"], "deny": ["pro", "free", "guest"] }
+  },
+  "denied_when": [
+    { "text_visible": "You don't have access to this page" }
+  ],
+  "access_settle_s": 5
+}

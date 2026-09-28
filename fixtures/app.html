@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Projects · Acme Notes</title>
+<link rel="stylesheet" href="style.css">
+<script>
+  // Signed-out visitors are sent to the sign-in page (EveryRole's access matrix reads this as "denied").
+  if (!localStorage.getItem("acme-user")) location.replace("login.html");
+</script>
+</head>
+<body>
+<nav><a href="app.html">Projects</a><a href="admin.html">Admin</a><a href="#" id="sign-out">Sign out</a></nav>
+<h1>Your projects</h1>
+<p id="who"></p>
+<ul id="list">
+  <li><a href="#/projects/launch-plan" data-name="Launch plan">Launch plan</a></li>
+  <li><a href="#/projects/hiring" data-name="Hiring">Hiring</a></li>
+</ul>
+<p id="opened" hidden></p>
+<button id="new" type="button">New project</button>
+<button id="delete" type="button">Delete account</button>
+
+<section id="create" hidden>
+  <h2>Create a project</h2>
+  <form id="create-form">
+    <label for="project-name">Project name</label>
+    <input id="project-name" name="name" type="text" placeholder="e.g. Q3 roadmap">
+    <button type="submit">Create project</button>
+  </form>
+  <p id="created" hidden></p>
+</section>
+
+<script>
+  const user = localStorage.getItem("acme-user");
+  document.getElementById("who").textContent = user ? "Signed in as " + user : "";
+  // Background traffic on every load, like real apps (analytics). Must never count as a save.
+  fetch("/api/metrics", { method: "POST", body: "{}" }).catch(() => {});
+  const openProject = () => {
+    const link = document.querySelector(`#list a[href="${location.hash}"]`);
+    const opened = document.getElementById("opened");
+    opened.hidden = !link;
+    if (link) opened.textContent = "Opened project: " + link.dataset.name;
+  };
+  window.addEventListener("hashchange", openProject);
+  openProject();
+  document.getElementById("new").onclick = () => { document.getElementById("create").hidden = false; };
+  document.getElementById("delete").onclick = () => { localStorage.clear(); location.href = "index.html"; };
+  document.getElementById("sign-out").onclick = event => {
+    event.preventDefault();
+    localStorage.removeItem("acme-user");
+    location.href = "login.html";
+  };
+  document.getElementById("create-form").addEventListener("submit", event => {
+    event.preventDefault();
+    const created = document.getElementById("created");
+    fetch("/api/projects", { method: "POST", headers: { "content-type": "application/json" },
+                             body: JSON.stringify({ name: document.getElementById("project-name").value }) })
+      .then(response => { created.textContent = response.ok ? "Project created" : "Could not save"; })
+      .catch(() => { created.textContent = "Could not save"; })
+      .finally(() => { created.hidden = false; });
+  });
+</script>
+</body>
+</html>
