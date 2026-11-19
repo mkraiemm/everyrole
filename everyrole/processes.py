@@ -30,7 +30,9 @@ def process_alive(pid):
 
 
 def stop_tree(pid):
-    """Stops a process and every process it started."""
+    """Stops a process and every process it started. On Linux and macOS that is its process group, unless it shares
+    this process's own group: then only the process itself, never the group (it would stop this process, its parent
+    and the CI job running them)."""
     if sys.platform == "win32":
         import subprocess
 
@@ -39,7 +41,11 @@ def stop_tree(pid):
     import signal
 
     try:
-        os.killpg(os.getpgid(int(pid)), signal.SIGTERM)
+        group = os.getpgid(int(pid))
+        if group == os.getpgrp():
+            os.kill(int(pid), signal.SIGTERM)
+        else:
+            os.killpg(group, signal.SIGTERM)
     except (ProcessLookupError, PermissionError):
         pass
 
