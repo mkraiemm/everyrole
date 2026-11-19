@@ -7,11 +7,14 @@
 __LOGIN_VARIABLES__#
 # Optional: EVERYROLE_GITLAB_TOKEN (a project access token, `api` scope) to comment on the merge request;
 #           BASE_URL and EVERYROLE_ENVIRONMENT to test a review app or staging instead of __PRODUCTION_URL__.
-# The job runs last in the pipeline (stage .post), after your deploy. It fails when a test is broken; the results
-# show in the merge request's test report, and in EveryRole with replays.
+# It fails when a test is broken; the results show in the merge request's test report, and in EveryRole with replays.
+#
+# Stage: `test` works in a pipeline of its own (GitLab won't start a pipeline whose only jobs are in .pre or .post).
+# If your .gitlab-ci.yml has other jobs (a deploy job), use `stage: .post` instead: the tests then run last, after
+# your deploy. If it lists its own `stages:` without test, use one of yours.
 
 everyrole:
-  stage: .post
+  stage: test
   image: python:3.12-slim-bookworm
   timeout: 45 minutes
   variables:

@@ -37,3 +37,13 @@ def test_junit_is_valid_xml(tmp_path):
     assert root.findall("testcase")[1].find("failure").get("message") == "failed_expect"
     out = report.write(tmp_path / "r", summary(), RESULTS)
     assert {p.name for p in out.iterdir()} == {"results.json", "summary.md", "junit.xml"}
+
+
+def test_an_access_only_run_has_no_empty_flow_table():
+    access = [{"path": "/admin", "persona": "guest", "expected": "deny", "observed": "deny", "passed": True,
+               "status": "passed"}]
+    s = report.summarize({"results": [], "access": access, "duration_ms": 900}, base_url="https://x.io",
+                         environment="prod")
+    md = report.markdown(s, [], access)
+    assert "| Flow |" not in md and "/admin" in md
+    assert "| Flow |" in report.markdown(summary(), RESULTS)

@@ -217,7 +217,9 @@ Exit code: `0` every test passed, `1` a test is broken, `2` nothing could be che
 refused key...).
 
 GitLab: copy [`everyrole/ci_files/everyrole.gitlab-ci.yml`](everyrole/ci_files/everyrole.gitlab-ci.yml) into
-your `.gitlab-ci.yml` (EveryRole fills it in for your app in Settings). GitHub: the action takes `app` and
+your `.gitlab-ci.yml` (EveryRole fills it in for your app in Settings). It runs in the `test` stage, so it works when it is the only job: GitLab starts no pipeline whose only jobs
+are in `.pre` or `.post`. If your pipeline has other jobs (a deploy job), change it to `stage: .post` so the
+tests run last, after your deploy; if your file lists its own `stages:` without `test`, use one of yours. GitHub: the action takes `app` and
 `api-key`:
 
 ```yaml

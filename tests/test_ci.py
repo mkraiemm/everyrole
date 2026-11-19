@@ -107,6 +107,17 @@ def test_the_merge_request_gets_one_comment_updated_in_place(tmp_path):
     assert post_report(summary, environ={}).startswith("skipped")
 
 
+def test_the_gitlab_job_starts_a_pipeline_on_its_own():
+    """GitLab creates no pipeline whose only jobs are in .pre/.post ("would have been empty"): the job, often the
+    only one in a repository that deploys elsewhere, sits in a default stage, and says how to run it after a deploy
+    job instead."""
+    import re
+
+    text = (Path(ci.__file__).parent / "ci_files" / "everyrole.gitlab-ci.yml").read_text(encoding="utf-8")
+    assert re.findall(r"^  stage: *(\S+)", text, re.M) == ["test"]  # each job's own stage (comments start with #)
+    assert "stage: .post" in text  # the hint for a pipeline with a deploy job
+
+
 def test_the_gitlab_job_installs_this_runner_and_reports_junit():
     job = (Path(ci.__file__).parent / "ci_files" / "everyrole.gitlab-ci.yml").read_text(encoding="utf-8")
     assert "git+https://github.com/mkraiemm/everyrole.git@" in job
