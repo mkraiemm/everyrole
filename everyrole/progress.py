@@ -4,15 +4,25 @@ Units, in the order they run: the site check, one sign-in per kind of user, then
 user's page-access checks (run together). Each unit: queued -> running -> passed | retry | failed | not_checked |
 not_run, with its start and end times and, when it did not pass, the reason. Written atomically (a reader never
 sees half a file); a run without an output folder keeps no file.
+
+A test's whole result is also kept the moment it ends (finished/<key>.json), so its replay can be watched while the
+rest of the run goes on; the report (results.json) comes only at the end.
 """
 
 import json
 import os
+import re
 import threading
 import time
 from pathlib import Path
 
 from . import verdict
+
+FINISHED = "finished"  # next to progress.json: each test's result as soon as it ends
+
+
+def finished_path(run_dir, key):
+    return Path(run_dir) / FINISHED / (re.sub(r"[^A-Za-z0-9@._-]", "_", key) + ".json")
 
 
 class Progress:
@@ -33,8 +43,18 @@ class Progress:
         self._update(key, state="running", started=self.clock())
         result = work()
         state, detail = outcome(result)
+        self._keep(key, result)  # before it shows as ended: whoever sees it ended can open its replay
         self._update(key, state=state, detail=detail, ended=self.clock(), result=brief(result))
         return result
+
+    def _keep(self, key, result):
+        if self.path is None or not isinstance(result, dict) or not result.get("name"):
+            return
+        path = finished_path(self.path.parent, key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, path)
 
     def done(self):
         with self.lock:

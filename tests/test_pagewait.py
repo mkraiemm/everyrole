@@ -19,12 +19,12 @@ def wait(page, max_s=10):
                              sleep=lambda s: None)
 
 
-SKELETON = ["complete", 200, 90, "https://app.io/projects", 8]
+SKELETON = ["complete", 200, 90, "https://app.io/films", 8]
 
 
 def test_frozen_skeleton_with_a_request_in_flight_is_not_settled():
-    waiting = [*SKELETON, 1]  # the screen does not change, but the projects request is still running
-    loaded = ["complete", 900, 300, "https://app.io/projects", 9, 0]
+    waiting = [*SKELETON, 1]  # the screen does not change, but the films request is still running
+    loaded = ["complete", 900, 300, "https://app.io/films", 9, 0]
     page = Page([waiting] * 6 + [loaded])
     assert wait(page)
     assert page.reads >= 9  # it waited through all six in-flight reads, then saw the loaded page settle

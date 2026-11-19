@@ -72,11 +72,12 @@ writes `everyrole-report/` (`summary.md`, `results.json`, `junit.xml`, `usage.js
 
 | Command | What it does |
 |---|---|
-| `everyrole doctor` | Is this machine ready? Python, Chrome, ffmpeg, keys, provider (no model calls) |
+| `everyrole doctor` | Is this machine ready? Python, Chrome, ffmpeg, keys, provider, and a tiny call to each model |
 | `everyrole validate flows` | Checks flow and config files against the schemas, offline |
 | `everyrole run flows --base-url URL` | Runs the flows and access rules; exit 1 when the app is broken |
 | `everyrole signin --persona NAME` | Signs in as one user type, exactly as a run does, and says where it landed |
 | `everyrole comment` | Posts or updates the report as one pull-request comment (GitHub Actions) |
+| `everyrole ci --app NAME` | In your CI: runs an app's tests kept in EveryRole, with logins only your CI has ([Run in your own CI](#run-in-your-own-ci)) |
 
 No app at hand? The repository has a demo app and its checks: [Getting started](docs/getting-started.md).
 
@@ -198,6 +199,39 @@ One PR comment, updated in place; the report and replay videos as an artifact; "
 labelled as a machine problem, not an app failure. Vercel previews: [`examples/github/everyrole.yml`](examples/github/everyrole.yml).
 GitHub details: [GitHub Action](docs/github-action.md). GitLab and any other CI: [CI](docs/ci.md).
 
+## Run in your own CI
+
+If your tests live in [EveryRole](https://everyrole.dev), your own CI can run them: the tests come from
+EveryRole, the test logins stay in your CI. `everyrole ci --app <your app>`, in a GitLab or GitHub job:
+
+1. asks EveryRole for the app's tests (with a workspace API key, `EVERYROLE_API_KEY`);
+2. reads each kind of user's login from two masked CI variables, `EVERYROLE_LOGIN_<KIND>_USERNAME` and
+   `EVERYROLE_LOGIN_<KIND>_PASSWORD` (a missing one is named, and nothing runs);
+3. runs the tests in the job's own browser. The runner types each login itself; the AI model calls go through
+   EveryRole with the API key (no model key of your own), and only ever see a value's name, never the value;
+4. uploads the results (verdicts, failing steps, pictures, replays: never a login) so the run shows in EveryRole,
+   keeps them in `everyrole-report/` (`junit.xml` for the CI's test report) and, with `--comment`, comments on the
+   merge request or pull request.
+
+Exit code: `0` every test passed, `1` a test is broken, `2` nothing could be checked (a missing variable, a
+refused key...).
+
+GitLab: copy [`everyrole/ci_files/everyrole.gitlab-ci.yml`](everyrole/ci_files/everyrole.gitlab-ci.yml) into
+your `.gitlab-ci.yml` (EveryRole fills it in for your app in Settings). GitHub: the action takes `app` and
+`api-key`:
+
+```yaml
+      - uses: mkraiemm/everyrole@main
+        with:
+          app: your-app
+          api-key: ${{ secrets.EVERYROLE_API_KEY }}
+        env:
+          EVERYROLE_LOGIN_ADMIN_USERNAME: ${{ secrets.EVERYROLE_LOGIN_ADMIN_USERNAME }}
+          EVERYROLE_LOGIN_ADMIN_PASSWORD: ${{ secrets.EVERYROLE_LOGIN_ADMIN_PASSWORD }}
+```
+
+Setup, variables and options: [everyrole.dev/docs#ci](https://everyrole.dev/docs#ci).
+
 ## Security
 
 - **Secrets never reach a model.** The model sees only the *name* of a value ("password"); EveryRole types the
@@ -218,7 +252,7 @@ Limits and recommendations: [Security model](docs/security.md).
 | `TYPESAFE_URL`, `TYPESAFE_MODEL` | with the Vercel AI Gateway | `https://ai-gateway.vercel.sh/typesafe/v1/systemone`, `typesafe-ai/jev`. Omit both for TypeSafe directly |
 | `TEXT_MODEL_API_KEY`, `TEXT_MODEL_BASE_URL`, `TEXT_MODEL` | optional | Any OpenAI-compatible model, only for fields none of the flow's `values` fits |
 
-No EveryRole server, no telemetry. Details: [Bring your own AI key](docs/ai-keys.md).
+With your own flows and key: no EveryRole server, no telemetry. Details: [Bring your own AI key](docs/ai-keys.md).
 
 ## Limits
 

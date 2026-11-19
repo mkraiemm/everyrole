@@ -38,26 +38,39 @@ def checker(pages):
     ticks = iter(i * 0.25 for i in range(10000))
     facts = lambda browser, page: PageFacts(url=page["url"], text="", labels=())  # noqa: E731
     loading = lambda browser: ("loading", False) if browser.options.get("busy") else ("loaded", True)  # noqa: E731
+    waiting = lambda browser: [("xhr", "app.io/api/whoami", 4.2)] if browser.options.get("busy") else []  # noqa: E731
     return AccessChecker(browser_factory=factory, facts_reader=facts, clock=lambda: next(ticks),
-                         sleep=lambda s: None, page_state=loading), opened
+                         sleep=lambda s: None, page_state=loading, pending_reader=waiting), opened
 
 
 def test_access_denied_allowed_and_errors():
     run, opened = checker({
         "https://app.io/billing": {"final_url": "https://app.io/login?next=/billing", "redirect_after": 2},
-        "https://app.io/projects": {},
+        "https://app.io/films": {},
         "https://app.io/admin": {},
         "https://app.io/broken": RuntimeError("boom"),
     })
-    rules = [("/billing", "deny"), ("/projects", "allow"), ("/admin", "deny"), ("/broken", "allow")]
+    rules = [("/billing", "deny"), ("/films", "allow"), ("/admin", "deny"), ("/broken", "allow")]
     results = run.run(base_url="https://app.io/", persona="free", rules=rules,
                       denied_when=[{"url_contains": "/login"}], settle_s=3, session_state={"cookies": []})
     got = {r.path: (r.observed, r.passed) for r in results}
-    assert got == {"/billing": ("denied", True), "/projects": ("allowed", True), "/admin": ("allowed", False),
+    assert got == {"/billing": ("denied", True), "/films": ("allowed", True), "/admin": ("allowed", False),
                    "/broken": ("error", False)}
     assert [r.path for r in results] == [p for p, _ in rules]  # stable order
     assert all(t.closed for t in opened) and all(t.options["isolated"] for t in opened)
     assert all("prepare" in t.options for t in opened)  # the persona's session is restored
+
+
+def test_a_page_the_app_refuses_in_place_is_denied():
+    # the app keeps the address and answers 404 (hiding its admin area) or 403: that is a no, not an open door
+    run, _opened = checker({"https://app.io/admin": {}, "https://app.io/team": {}, "https://app.io/films": {}})
+    answers = {"https://app.io/admin": 404, "https://app.io/team": 403, "https://app.io/films": 200}
+    run._status = lambda browser: answers[browser.url]
+    rows = run.run(base_url="https://app.io/", persona="free", denied_when=[], settle_s=2,
+                   rules=[("/admin", "deny"), ("/team", "deny"), ("/films", "allow")])
+    assert [(r.observed, r.passed, r.detail) for r in rows] == [
+        ("denied", True, "answered HTTP 404"), ("denied", True, "answered HTTP 403"),
+        ("allowed", True, "no denial signal within 2s")]
 
 
 def test_a_page_still_loading_is_not_called_open():
@@ -68,7 +81,18 @@ def test_a_page_still_loading_is_not_called_open():
     budgets, films = rows
     assert (budgets.observed, budgets.passed, budgets.cause) == ("unsure", False, "machine")
     assert "still loading" in budgets.detail and len(opened) == 3  # checked again alone before reporting
+    assert budgets.detail.endswith("(waiting for xhr app.io/api/whoami (4.2 s))")  # says what it waits for
     assert (films.observed, films.passed) == ("allowed", True)
+
+
+def test_what_a_page_waits_for_is_said_oldest_first_without_queries():
+    from everyrole.pagewait import describe_pending
+
+    pending = [("fetch", "app.io/api/me", 0.4), ("xhr", "app.io/poll", 5.0), ("fetch", "cdn.io/a", 1.0),
+               ("fetch", "cdn.io/b", 0.2)]
+    assert describe_pending(pending) == ("waiting for xhr app.io/poll (5.0 s), fetch cdn.io/a (1.0 s), "
+                                         "fetch app.io/api/me (0.4 s) and 1 more")
+    assert describe_pending([]) == ""
 
 
 def test_expected_rules_per_persona():
@@ -82,7 +106,7 @@ def make_config():
     return Config(
         login={"timeout_s": 60},
         personas={"paid": Persona("paid", {}), "free": Persona("free", {}), "guest": Persona("guest", {}, False)},
-        access={"/projects": {"allow": ["paid", "free"], "deny": ["guest"]}},
+        access={"/films": {"allow": ["paid", "free"], "deny": ["guest"]}},
         denied_when=({"url_contains": "/login"},),
         access_settle_s=1,
     )
@@ -91,15 +115,14 @@ def make_config():
 def fake_suite(login_ok):
     calls = []
 
-    def spawn(self, args, *, name, timeout_s, source=""):
+    def spawn(self, args, *, name, timeout_s, source="", env_extra=None, quiet_s=None):
         calls.append((args[0], name, args))
         if args[0] == "login":
             persona = args[args.index("--persona") + 1]
             return {"name": name, "passed": login_ok[persona], "status": "passed" if login_ok[persona] else "failed"}
         if args[0] == "access":
             persona = args[args.index("--persona") + 1]
-            return [{"path": "/projects", "persona": persona, "expected": "allow", "observed": "allowed",
-                     "passed": True}]
+            return [{"path": "/films", "persona": persona, "expected": "allow", "observed": "allowed", "passed": True}]
         return {"name": name, "passed": True, "status": "passed", "args": args}
 
     SuiteRunner._spawn, original = spawn, SuiteRunner._spawn
@@ -173,6 +196,8 @@ def test_being_redirected_away_counts_as_refused_without_any_signal():
     assert by["/admin/users"].observed == "allowed" and not by["/admin/users"].passed
 
 
+
+
 def test_a_check_that_could_not_run_is_retried_alone():
     attempts = []
 
@@ -243,3 +268,87 @@ def test_tabs_a_killed_worker_left_open_are_closed(tmp_path):
         assert not set(left) & open_ids()
         assert close_tabs(chrome.url, left) == 0  # closing again is harmless
         daemons.stop(daemon_home)  # like the job does for a worker that was killed
+
+
+def test_a_page_that_polls_in_the_background_is_judged():
+    from everyrole.access import AccessChecker
+    from everyrole.assertions import PageFacts
+
+    class Polling:
+        def __init__(self, url, **options):
+            self.url, self.reads = url, 0
+
+        def observe(self, screenshot=False):
+            return {"url": self.url}
+
+        def close(self):
+            pass
+
+    def state(browser):  # a request every other read, and a clock on the page: never steady, sometimes quiet
+        browser.reads += 1
+        return (f"tick {browser.reads}", browser.reads % 2 == 0)
+
+    ticks = iter(i * 0.25 for i in range(10000))
+    checker = AccessChecker(browser_factory=Polling, clock=lambda: next(ticks), sleep=lambda s: None,
+                            facts_reader=lambda b, p: PageFacts(url=p["url"], text="", labels=()), page_state=state)
+    (row,) = checker.run(base_url="https://app.io", persona="paid", rules=[("/films", "allow")], denied_when=[],
+                         settle_s=3)
+    assert (row.observed, row.passed) == ("allowed", True)
+
+
+def test_a_dropped_browser_connection_is_tried_again_gently():
+    from everyrole.access import AccessChecker
+    from everyrole.assertions import PageFacts
+
+    attempts, waits = [], []
+
+    class Flaky:
+        def __init__(self, url, **options):
+            attempts.append(url)
+            if len(attempts) < 3:
+                raise ConnectionResetError("[WinError 10054] connection reset")
+            self.url = url
+
+        def observe(self, screenshot=False):
+            return {"url": self.url}
+
+        def close(self):
+            pass
+
+    ticks = iter(i * 0.25 for i in range(10000))
+    checker = AccessChecker(browser_factory=Flaky, clock=lambda: next(ticks), sleep=waits.append,
+                            facts_reader=lambda b, p: PageFacts(url=p["url"], text="", labels=()),
+                            page_state=lambda b: ("loaded", True))
+    (row,) = checker.run(base_url="https://app.io", persona="free", rules=[("/films", "allow")], denied_when=[],
+                         settle_s=1)
+    assert row.observed == "allowed" and len(attempts) == 3 and waits[:2] == [1.0, 2.0]
+
+
+def test_pages_not_judged_while_all_ran_are_checked_again_once_the_rest_is_done():
+    calls = []
+
+    def spawn(self, args, *, name, timeout_s, source="", env_extra=None, quiet_s=None):
+        persona = args[args.index("--persona") + 1] if "--persona" in args else ""
+        if args[0] == "login":
+            return {"name": name, "passed": True, "status": "passed"}
+        calls.append(persona)
+        first = calls.count(persona) == 1
+        if persona == "paid":  # busy the first time, answers when checked again
+            observed, detail = ("unsure", "still loading after 1s: not judged") if first else ("allowed", "ok")
+        elif persona == "free":  # never answers
+            observed, detail = "unsure", "still loading after 1s: not judged"
+        else:
+            observed, detail = "denied", "redirected to /login"
+        return [{"path": "/films", "persona": persona, "expected": "allow" if persona != "guest" else "deny",
+                 "observed": observed, "passed": observed == "allowed" or observed == "denied", "detail": detail}]
+
+    SuiteRunner._spawn, original = spawn, SuiteRunner._spawn
+    try:
+        suite = SuiteRunner(parallel=2, cdp_url="http://cdp", base_url="https://app.io", output_dir=tempfile.mkdtemp(),
+                            env_file=".env").run([], make_config())
+    finally:
+        SuiteRunner._spawn = original
+    rows = {a["persona"]: a for a in suite["access"]}
+    assert rows["paid"]["passed"] and "checked again once the others were done" in rows["paid"]["detail"]
+    assert not rows["free"]["passed"] and "also while the others ran" in rows["free"]["detail"]
+    assert calls.count("guest") == 1 and calls.count("paid") == 2  # only the doubtful ones, once more

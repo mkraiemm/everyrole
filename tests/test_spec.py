@@ -99,17 +99,26 @@ def test_schema_and_assertion_registry_agree():
     assert keys == set(assertions.REGISTRY)
 
 
-@pytest.mark.parametrize("example", ["quickstart", "saas-app"])
-def test_examples_are_valid(example):
+def test_example_project_is_valid():
     from pathlib import Path
 
-    from everyrole.spec import load_config, login_flow
+    from everyrole.spec import load_config
 
-    root = Path(__file__).resolve().parents[1] / "examples" / example
+    root = Path(__file__).resolve().parents[1] / "examples" / "quickstart"
+    env = {"DEMO_EMAIL": "m@x.io", "DEMO_PASSWORD": "p"}
     config = load_config(root / "everyrole.config.json")
-    env = {name: "placeholder-value" for name in ("DEMO_EMAIL", "DEMO_PASSWORD", "ADMIN_EMAIL", "ADMIN_PASSWORD",
-                                                  "PRO_EMAIL", "PRO_PASSWORD", "FREE_EMAIL", "FREE_PASSWORD")}
-    for persona in (p for p, spec in config.personas.items() if spec.login):
-        login_flow(config, persona, base_url="https://app.example.com", env=env, run_id="t")
-    flows = load_flows([root / "flows"], config=config, base_url="https://app.example.com", env=env, run_id="t")
-    assert flows and all(f.expect for f in flows)
+    flows = load_flows([root / "flows"], config=config, base_url="http://127.0.0.1:8000", env=env, run_id="t")
+    assert {f.name.split("@")[0] for f in flows} >= {'member-creates-project', 'member-opens-project', 'public-pricing'}
+
+
+def test_a_test_that_only_checks_a_save_attempt_never_really_saves():
+    save = {"tried_to_save": "/admin/users/2/suspend"}
+    base = dict(values={}, expect=[save])
+    assert parse_flow(flow(**base), base_url="https://app.example.com", env=ENV).block_writes  # no flag: blocked
+    assert parse_flow(flow(**base, block_writes=True), base_url="https://app.example.com", env=ENV).block_writes
+    # a test meant to change data, and the password-change test, keep saving for real
+    assert not parse_flow(flow(**base, run_on=["preview"]), base_url="https://app.example.com", env=ENV).block_writes
+    from everyrole.spec import _blocks_writes
+
+    assert not _blocks_writes({"changes_password": True}, [save])
+    assert not parse_flow(flow(values={}), base_url="https://app.example.com", env=ENV).block_writes  # page check

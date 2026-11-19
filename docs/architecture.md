@@ -30,7 +30,7 @@ flowchart TD
 
 ## The pieces
 
-**`cli.py`** parses the command (`validate`, `run`, `signin`, `doctor`, `comment`), loads `.env` (never
+**`cli.py`** parses the command (`validate`, `run`, `signin`, `doctor`, `comment`, `ci`; `ci` is `ci.py`, below), loads `.env` (never
 overriding real environment variables), loads and validates the config and flows, sets up the run's limits,
 starts Chrome, runs the suite, writes the report and returns the exit code.
 
@@ -104,6 +104,13 @@ unreadable pages are re-checked alone.
 `usage.json`, what the run used of the models as the provider reported it (calls, tokens, cost when given). **`github.py`** finds the
 pull request (from the event, or from the deployed commit for `deployment_status`) and creates or updates one
 comment, found by a hidden marker.
+
+**`ci.py`** is `everyrole ci`: it asks EveryRole for an app's tests (`POST /api/v1/apps/<app>/ci/runs`, with the
+workspace API key), reads each login from its CI variables, writes the tests as files and runs `everyrole run` on
+them in a child process whose environment has the logins under the names the config reads and EveryRole's model
+addresses (the API key as the model key). Every line it prints and every report file is filtered for the logins
+(`redact.py`); while it runs it sends a heartbeat, then uploads the report as one zip (never the account book) and,
+with `--comment`, comments through **`gitlab.py`** or `github.py`.
 
 ## The engine (`engine/jev_ultrafast`)
 

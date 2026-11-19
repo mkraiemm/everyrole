@@ -2,8 +2,8 @@
 
 Installed before the page's own scripts. GET/HEAD/OPTIONS requests pass; any other fetch/XHR method, form
 POST submission and sendBeacon is blocked and recorded in `window.__swBlocked` as [method, url].
-Used by "form only" flows (`block_writes`), which fill and submit a form and then check that it TRIED to save,
-without saving.
+Used (1) while exploring, so clicking buttons to see what they open can never change the app, and (2) by
+"form only" flows, which fill and submit a form and then check that it TRIED to save, without saving.
 
 Limits (page-level, not a network proxy): service-worker traffic and native form navigations to other
 origins are not intercepted; websockets are not blocked.

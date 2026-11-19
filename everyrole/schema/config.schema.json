@@ -113,6 +113,55 @@
               }
             },
             "description": "Use a sign-in a person did by hand (e.g. to pass a security check) instead of typing a password."
+          },
+          "signin": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "start",
+              "expect"
+            ],
+            "properties": {
+              "start": {
+                "type": "string",
+                "minLength": 1,
+                "description": "This user type's own sign-in page (e.g. {{URL.admin}}/login)."
+              },
+              "expect": {
+                "$ref": "flow.schema.json#/$defs/checks"
+              },
+              "goal": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Only when this user type's sign-in is not the usual one (e.g. accepting an emailed invitation): what to do there instead of `login.goal`."
+              }
+            },
+            "description": "Where this user type signs in when it is not the app's sign-in page (`login.start`), and how to tell it is signed in there. The rest of the recipe (goal, limits) comes from `login`."
+          },
+          "login_link": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["url"],
+            "properties": {
+              "url": {"type": "string", "pattern": "^https?://", "description": "The app's login-link endpoint: EveryRole POSTs a signed request there and opens the one-time sign-in link it answers with."},
+              "check": {"type": "string", "pattern": "^([a-z][a-z0-9_]*:)?/", "description": "A signed-in page that proves the sign-in (default: where the link landed)."}
+            },
+            "description": "Signed in by the app itself: no password. The signing key is the EVERYROLE_LOGIN_LINK_KEY secret (see login_link.py)."
+          },
+          "production": {
+            "type": "boolean",
+            "default": true,
+            "description": "false: this user type is never explored or tested on production (an admin, until the team allows admin tests there); other environments are unaffected."
+          },
+          "signin_by": {
+            "type": "string",
+            "enum": [
+              "",
+              "email",
+              "password"
+            ],
+            "default": "",
+            "description": "How this user type signs in, when known: \"email\" (the link the app emails, e.g. an account EveryRole made by accepting an invitation) or \"password\"."
           }
         }
       },
@@ -280,6 +329,20 @@
           "maximum": 50,
           "default": 8,
           "description": "Pages one page-access check opens at once (each in its own tab). A kind of user with more pages gets several checks, run at the same time like tests."
+        },
+        "flaky_runs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 10,
+          "description": "How many of a test's recent runs (same environment, same kind of user) are looked at to tell if it is flaky: failed, then passed again. A flaky test is set aside, never shown as broken."
+        },
+        "flaky_clears_after": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50,
+          "default": 3,
+          "description": "Passes in a row (each on the first try) after which a flaky test is trusted again."
         },
         "limits": {
           "type": "object",

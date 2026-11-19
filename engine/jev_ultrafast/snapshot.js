@@ -52,7 +52,7 @@
     const scope=e.closest('form,dialog,[role="dialog"],article,li,tr,[role="row"]') || e.parentElement;
     return [identity(e),role(e),name(e),(secret(e)?e.value.length:e.value)??null,e.checked??null,e.selectedIndex??null,
       e.readOnly??null,e.matches(':disabled'),e.getAttribute('aria-disabled'),
-      e.getAttribute('aria-expanded'),e.getAttribute('aria-checked'),e.getAttribute('aria-selected'),
+      e.getAttribute('aria-expanded'),e.getAttribute('aria-checked'),e.getAttribute('aria-selected'),e.getAttribute('aria-pressed'),
       e.getAttribute('href'),scope?.innerText?.slice(0,6000)||''];
   };
   const actions=[];
@@ -74,6 +74,9 @@
     if (rname==='gridcell' && e.querySelector('button,[role="button"]')) continue;
     const base={node:identity(e),role:rname,label:name(e)||rname,
       rect:{x:r.x,y:r.y,w:r.width,h:r.height}};
+    if (secret(e)) base.secret=true;  // a password field: only a named value may be typed into it
+    // a link's address: a before_execute hook can refuse it by where it goes, not only by its words
+    if (e.tagName==='A' && e.href && /^https?:/.test(e.href)) base.href=e.href;
     // Something else is drawn over its middle (a cookie banner, a chat button, a backdrop): a click would land on
     // that instead. Say what covers it, so the choice is to deal with the overlay (or scroll), not to retry.
     const onPage=document.elementFromPoint(x,y);
@@ -81,9 +84,14 @@
     if (top && !e.contains(top) && !top.contains(e)) {
       const layer=[...function*(n){ for (; n && n!==document.body; n=n.parentElement) yield n; }(top)]
         .reverse().find(n=>['fixed','sticky'].includes(getComputedStyle(n).position)) || top;
-      base.covered_by=(layer.innerText||layer.getAttribute('aria-label')||layer.tagName).replace(/\s+/g,' ').trim().slice(0,80);
+      // P21: a frame from another site (an ad over the whole page) has no words the page can read: name its site
+      const inner=top.matches('iframe,frame') ? top : layer.querySelector('iframe,frame');
+      let foreign='';
+      if (inner) { let doc=null; try { doc=inner.contentDocument; } catch (err) { doc=null; }
+        if (!doc) try { foreign='a window from '+new URL(inner.src,location.href).hostname; } catch (err) { foreign=''; } }
+      base.covered_by=(layer.innerText||layer.getAttribute('aria-label')||foreign||layer.tagName).replace(/\s+/g,' ').trim().slice(0,80);
     }
-    for (const key of ['checked','selected','expanded']) {
+    for (const key of ['checked','selected','expanded','pressed']) {
       const value=e.getAttribute('aria-'+key);
       if (value!==null) base[key]=value;
     }
@@ -103,6 +111,45 @@
       // P12: single-line inputs that act on Enter (search, add item, chat) need a way to press it
       if (editable && e.tagName==='INPUT') actions.push({...base,kind:'submit',value,label:'Press Enter in '+base.label});
     }
+  }
+  // P16: answers drawn as cards. A radio or checkbox hidden behind its visible label (opacity 0, clipped) is
+  // offered through that label; an element with no control role that the page makes clickable (a pointer cursor:
+  // a tile, a card) is offered as a button, when it holds no listed control and sits inside no clickable one.
+  const listed=new Set(actions.map(a=>a.node));
+  const offer=(e,rname,label,extra)=>{
+    const r=e.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2;
+    if (r.width<=0 || r.height<=0 || x<0 || y<0 || x>=innerWidth || y>=innerHeight) return;
+    const node=identity(e);
+    if (listed.has(node)) return;
+    listed.add(node);
+    actions.push({node,role:rname,label,rect:{x:r.x,y:r.y,w:r.width,h:r.height},kind:'click',value:'',...extra});
+  };
+  const said = e => (e.innerText||e.getAttribute('aria-label')||'').replace(/\s+/g,' ').trim();
+  for (const input of document.querySelectorAll('input[type="radio"],input[type="checkbox"]')) {
+    if (input.disabled || visible(input)) continue;
+    const label=input.closest('label') || input.labels?.[0];
+    if (!label || !visible(label)) continue;
+    offer(label,input.type,(name(input)||said(label)).slice(0,80),{checked:String(input.checked)});
+  }
+  const controls=selector+',label';
+  // P23: a link with no address that the page makes clickable (a pointer cursor) is a button: shops draw "Add to cart"
+  // as <a class="btn"> with a script behind it (automationexercise.com: the agent was never offered it and scrolled
+  // until its budget ran out). Looked at first, so a long page's 3000-element cap below never leaves it out.
+  for (const e of document.body.querySelectorAll('a:not([href])')) {
+    if (e.parentElement?.closest(controls) || e.querySelector(controls)) continue;
+    if (getComputedStyle(e).cursor!=='pointer' || !visible(e)) continue;
+    const text=said(e);
+    if (text && text.length<=80) offer(e,'button',text,{});
+  }
+  let looked=0;
+  for (const e of document.body.querySelectorAll('div,span,li,p,img,svg,td,section,article')) {
+    if (++looked>3000) break;
+    if (e.closest(controls) || e.querySelector(controls)) continue;
+    if (getComputedStyle(e).cursor!=='pointer') continue;
+    if (e.parentElement && getComputedStyle(e.parentElement).cursor==='pointer') continue;
+    const text=said(e);
+    if (!text || text.length>80 || !visible(e)) continue;
+    offer(e,'button',text,{});
   }
   const words=[]; let length=0;
   for (const {doc,x:dx,y:dy} of frames) {
@@ -148,6 +195,11 @@
   const step=Math.max(200,Math.round(viewport*0.8));
   if (scrolled+viewport<height-2) actions.push({id:'scroll_down',kind:'scroll',label:'Scroll down: more of the page is below, with elements not listed yet',delta:step,...at});
   if (scrolled>0) actions.push({id:'scroll_up',kind:'scroll',label:'Scroll up: more of the page is above',delta:-step,...at});
+  // P19: a long page in one move. Reaching a footer link one screen at a time cost a model call and a settle per
+  // screen (14 scrolls to click "About" at the bottom of a long page).
+  const below=height-(scrolled+viewport);
+  if (below>step*1.5) actions.push({id:'scroll_end',kind:'scroll',label:'Jump to the bottom of the page (its footer)',delta:below+viewport,...at});
+  if (scrolled>step*1.5) actions.push({id:'scroll_start',kind:'scroll',label:'Jump back to the top of the page',delta:-(scrolled+viewport),...at});
   actions.push({id:'wait',kind:'wait',label:'Wait for the page to update'});
   return {url:location.href,title:document.title,w:innerWidth,h:innerHeight,text,
     scroll:{y:scrolled,height},actions,marker,page_key,guards,omitted_actions};

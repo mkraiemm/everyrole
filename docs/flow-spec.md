@@ -70,6 +70,24 @@ Every secret a flow uses is tracked. Its literal value never reaches a model and
 | `submit_settle_s` | integer 0-60 | `15` | With `block_writes`: how long to wait for the page to go quiet before judging. Apps often validate input for a while before they try to save |
 | `scroll_retries` | integer 0-10 | `3` | When the model gives up but the page continues below the fold, scroll one screen and let it try again, up to this many times |
 | `run_on` | list of strings | `[]` (always) | Environments this flow runs in, matched against `everyrole run --env`. Use `["preview"]` for anything that changes real data |
+| `steps` | list | | A journey: steps done one after the other in the same browser, each judged by its own checks (`goal`, `expect`, ...) before the next starts. The first step that fails stops the journey; pass/fail still comes only from checks |
+| `way_in` | object | | Per user type (`""` for the visitor): the page it starts on and the links it clicks to reach this test's page (`{"entry": "/", "clicks": [{"label": "Pricing", "to": "/pricing"}]}`). The test then runs as those clicks, then its own goal and checks: it proves people can get there, not only that the page opens |
+| `importance` | `critical`, `important` or `minor` | `important` | How much this test matters: critical = money and access (sign up, log in, pay, the core action), important = daily use, minor = content (blog, legal, docs). Critical tests are listed first and counted apart in the summary |
+| `importance_why` | string | | One line: why this level |
+| `importance_set_by` | string | | Set when a person chose the level, so tools that write tests never change it |
+| `changes_password` | boolean | `false` | The test changes its user type's own password for real: it types the new password from `EVERYROLE_NEW_PASSWORD_<USER TYPE>`, then the run signs in with it. Not run where no new password was prepared (a CI run) |
+| `deletes` | boolean | | The journey presses Delete or Remove account: it destroys what it uses, so it runs only when asked (`everyrole run --skip-delete` leaves it out) |
+| `account` | string | | The email of the run's test account this journey uses, when a run made several for one user type. Written by EveryRole |
+| `measured_ms` | integer | | How long the journey took before it ran as a test, used until it has run times of its own. Written by EveryRole |
+| `found_on` | string | | The environment this test was found on, when it wasn't production (e.g. `staging`). On production it is tried once at the next run and kept when it works there |
+| `promoted_from` | string | | Set when a test found on another environment worked on production and now runs everywhere |
+| `source` | object | | Where the test came from, when it was kept from a suggestion. Written by EveryRole; ignored when running |
+| `source.exploration` | integer | | The exploration that suggested it |
+| `source.at` | string | | When that exploration ended (ISO 8601) |
+| `release` | object | | A journey kept as a test that waits for a release to prove it on production. Written by EveryRole |
+| `release.change` | integer | | The change that brought this test |
+| `release.journey` | string | | Its journey's name in that change |
+| `release.live` | boolean | `false` | Proven on production: until then it runs on staging and previews only |
 
 ### Checks
 
@@ -87,6 +105,10 @@ collapse whitespace.
 | `element_absent` | No visible control has such a label |
 | `tried_to_save` | With `block_writes`: the page tried to write to an address containing this text (or to any address for `"*"`). Beacons and `ignore_saves` addresses never count |
 | `password_field_absent` | `true` only. The page shows no password field. Useful in `login.expect`: a two-step sign-in's password screen, or a sign-in form shown again after a refused attempt, still has one |
+| `count` | The text appears this many times: `{"text": "Your order", "equals": 1}` (also `at_least`, `at_most`). Proves something happened once and only once, especially after a reload |
+| `kept` | `true` only. Everything the journey typed in its earlier steps is still on the page (nothing lost after signing up or logging in partway) |
+| `signin_form_shown` | The address matches this regular expression (a sign-in page) and the page asks for a password: signed out, told from the page itself |
+| `email_received` | An email to the journey's new account arrived whose subject or text contains this (a welcome or confirmation email). Needs EveryRole's inboxes |
 
 ### One flow, several user types
 
@@ -167,6 +189,15 @@ See [verdicts.md](verdicts.md) for how these become passed / failed / not checke
 | `personas.<persona>.saved_signin.file` | string, required | | The session file (cookies and local storage, JSON), relative to the config file |
 | `personas.<persona>.saved_signin.check` | page | `/` | A signed-in page. Before a run uses the session, this page is opened with it (no AI): if the app sends the browser away (or a `denied_when` check matches), the sign-in has expired and the user type's work is reported as "not checked: sign in again", never as an app failure |
 | `personas.<persona>.saved_signin.saved_at` | number | | When the session was saved (Unix time). Informational |
+| `personas.<persona>.signin` | object | | Where this user type signs in when it is not `login.start`, and how to tell it is signed in there. The rest of the recipe (goal, limits) comes from `login` |
+| `personas.<persona>.signin.start` | string | | This user type's own sign-in page (e.g. `{{URL.admin}}/login`) |
+| `personas.<persona>.signin.expect` | checks | `login.expect` | Proof of being signed in there |
+| `personas.<persona>.signin.goal` | string | `login.goal` | Only when this user type's sign-in is not the usual one (e.g. accepting an emailed invitation): what to do there instead |
+| `personas.<persona>.signin_by` | string | `""` | How this user type signs in, when known: `"email"` (a link the app emails) or `"password"` |
+| `personas.<persona>.login_link` | object | | Signed in by the app itself, with no password: EveryRole POSTs a request signed with the `EVERYROLE_LOGIN_LINK_KEY` secret (an Ed25519 private key) to the app's endpoint and opens the one-time sign-in link it answers with. Needs `pip install "everyrole[login-links]"` |
+| `personas.<persona>.login_link.url` | string | | The app's login-link endpoint |
+| `personas.<persona>.login_link.check` | string | where the link landed | A signed-in page that proves the sign-in |
+| `personas.<persona>.production` | boolean | `true` | `false`: this user type is never tested on production (an admin, until the team allows it there); other environments are unaffected |
 | `access` | object | `{}` | The access matrix: page (`/path`, or `part:/path` on another part of the app) to who may and may not open it. Checked with no AI |
 | `access.<path>.allow` | list of user types | `[]` | These user types must be able to open the page |
 | `access.<path>.deny` | list of user types | `[]` | These user types must be refused |
@@ -184,6 +215,8 @@ See [verdicts.md](verdicts.md) for how these become passed / failed / not checke
 | `run.network.min_gap_s` | number 0-60 | `1` | Shortest wait between two new pages, however fast the network is |
 | `run.network.max_gap_s` | number 1-120 | `15` | Longest wait between two new pages, however slow the network gets |
 | `run.network.page_timeout_s` | number 10-600 | `60` | A page still loading after this long gives its place back |
+| `run.flaky_runs` | integer 1-100 | `10` | How many of a test's recent runs (same environment, same user type) are looked at to tell whether it is flaky: failed, then passed again. A flaky test is set aside, never shown as broken |
+| `run.flaky_clears_after` | integer 1-50 | `3` | Passes in a row (each on the first try) after which a flaky test is trusted again |
 | `discover` | object | `{}` | Settings for EveryRole's exploration tools (not part of this package). Accepted so one config file works everywhere; `everyrole run` and `everyrole validate` ignore it |
 | `discover.start_paths` | list of pages | `["/"]` | Where exploration starts |
 | `discover.max_pages` | integer 1-200 | `20` | Pages visited per user type |

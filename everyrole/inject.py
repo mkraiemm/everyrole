@@ -1,4 +1,4 @@
-"""Fault injection: plant a bug in the browser, then see whether the suite catches it.
+"""Fault injection for benchmarking: plant a bug in the browser, then see whether the suite catches it.
 
 A bug is a JSON list of rules applied to every page before the app's own scripts run (and kept applied as the
 app re-renders). It changes what users get without touching the app's code or server:

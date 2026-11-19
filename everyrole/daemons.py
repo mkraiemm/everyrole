@@ -19,11 +19,42 @@ ENV = "BH_RUNTIME_DIR"  # the harness's own setting: where a daemon registers (p
 JOB_ENV = "EVERYROLE_DAEMONS"  # this job's folder; each worker's daemon gets a subfolder of it
 
 
+PREFIX = "everyrole-daemons-"
+OWNER = "owner.txt"  # in a job's folder: the process it belongs to (never *.pid: stop() reads those)
+
+
+def new_folder():
+    """A job's daemon folder, marked with this process: once it is gone, sweep() stops what the folder holds."""
+    folder = Path(tempfile.mkdtemp(prefix=PREFIX))
+    (folder / OWNER).write_text(str(os.getpid()), encoding="utf-8")
+    return folder
+
+
 def claim():
-    """This job's daemon folder, made once."""
+    """This job's daemon folder, made once (or the one the job was given, EVERYROLE_DAEMONS)."""
     if not os.environ.get(JOB_ENV):
-        os.environ[JOB_ENV] = tempfile.mkdtemp(prefix="everyrole-daemons-")
+        os.environ[JOB_ENV] = str(new_folder())
     return Path(os.environ[JOB_ENV])
+
+
+def sweep(root=None):
+    """Stops the daemons of earlier jobs whose own process is gone: a run killed from outside (a time limit, a person
+    stopping it) never reached its own release, and its daemons ran on (17 of them on one PC after a day).
+    A folder with no owner mark is left alone (made before this). A long-lived process that runs jobs marks its
+    folders with itself: it releases each job's own, and what one that was itself killed left is stopped here.
+    -> how many daemons were stopped."""
+    stopped = 0
+    for folder in Path(root or tempfile.gettempdir()).glob(PREFIX + "*"):
+        owner = folder / OWNER
+        try:
+            pid = int(owner.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            continue
+        if pid == os.getpid() or process_alive(pid):
+            continue
+        stopped += stop(folder)
+        shutil.rmtree(folder, ignore_errors=True)
+    return stopped
 
 
 def for_worker(name):

@@ -31,6 +31,8 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8.4,<10", "ruff>=0.14,<1", "build>=1.2"]
 docs = ["markdown>=3.5"]  # scripts/render_pr_comment.py
+replays = ["pillow>=10"]  # the cursor drawn in replay videos (replay_cursor.py)
+login-links = ["cryptography>=42"]  # sign-in through the app's own login link (login_link.py)
 
 [project.urls]
 Homepage = "https://github.com/mkraiemm/everyrole"

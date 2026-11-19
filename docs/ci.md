@@ -63,6 +63,12 @@ Define `TYPESAFE_API_KEY` and your test-account secrets under Settings → CI/CD
 `everyrole comment` posts to GitHub pull requests only; on GitLab, the JUnit report shows the results in the merge
 request, and `everyrole-report/summary.md` can be posted with your own step.
 
+## Tests kept in EveryRole
+
+When your tests live in EveryRole, `everyrole ci --app <your app>` runs them in the CI job, with each test
+login read from masked CI variables that never leave the job. See
+[Run in your own CI](../README.md#run-in-your-own-ci) and [everyrole.dev/docs#ci](https://everyrole.dev/docs#ci).
+
 ## Any other CI (CircleCI, Jenkins, Buildkite, Azure Pipelines...)
 
 The same four steps in a shell:

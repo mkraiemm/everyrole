@@ -1,14 +1,15 @@
 """Suite outputs: results.json, summary.md (PR comment), junit.xml. Inputs are already redacted.
 
 Only app failures are shown as failures. Machine problems are shown as "not checked" and results that
-depend on a failed sign-in as "not run" (see verdict.py).
+depend on a failed sign-in as "not run" (see verdict.py). Flaky tests (flaky.py) are set aside: counted apart,
+never as failures, so nothing that reads the summary alarms on them.
 """
 
 import json
 from pathlib import Path
 from xml.etree import ElementTree
 
-from . import verdict
+from . import importance, verdict
 
 COMMENT_MARKER = "<!-- everyrole-report -->"
 STATUS_LABELS = {
@@ -32,6 +33,11 @@ def summarize(suite, *, base_url, environment, parts=None):
         "failed": tally[verdict.FAILED],  # app failures only
         "not_checked": tally[verdict.NOT_CHECKED],  # machine problems: say nothing about the app
         "not_run": tally[verdict.NOT_RUN],
+        "changed": tally[verdict.CHANGED],  # the app works but its wording changed: the test needs an update
+        "flaky": tally[verdict.FLAKY],  # set aside: they keep failing and passing on the same app (not failures)
+        "flaky_tests": [r["name"] for r in results if verdict.of(r) == verdict.FLAKY],
+        # per level (critical / important / minor), so alerts can be about what matters (importance.py)
+        "by_importance": importance.summary(results),
         "access_total": len(access),
         "access_passed": sum(1 for a in access if a.get("passed")),
         "duration_ms": suite["duration_ms"],
@@ -46,15 +52,37 @@ def _seconds(ms):
     return f"{(ms or 0) / 1000:.1f}s"
 
 
+def flaky_text(result):
+    """How a flaky test did lately, in words: "failed 2 of its last 6 runs; trusted again after 3 passes in a row"."""
+    info = result.get("flaky") or {}
+    left = info.get("passes_left", 0)
+    return (f"failed {info.get('failed', 0)} of its last {plural(info.get('runs', 0), 'run')}; set aside, not counted "
+            f"as broken, until it passes {plural(left, 'more time')} in a row")
+
+
+def plural(n, one, many=None):
+    return f"{n} {one if n == 1 else (many or one + 's')}"
+
+
 def _detail(result):
+    if verdict.of(result) == verdict.FLAKY:
+        now = "passed this time" if result.get("passed") else f"failed this time ({_why(result)})"
+        return f"flaky: {now}; {flaky_text(result)}"
     if verdict.of(result) == verdict.NOT_CHECKED:
         return f"machine problem, not your app: {result.get('error') or result.get('status', '')}"
+    if verdict.of(result) == verdict.CHANGED:
+        return "the wording changed: " + "; ".join(f"“{old}” is now “{new}”"
+                                                   for old, new in verdict.reworded(result.get("expectations")))
+    return _why(result)
+
+
+def _why(result):
     if result.get("error"):
         return result["error"]
     failed = [e for e in result.get("expectations", []) if not e.get("passed")]
     if failed:
         return "; ".join(f"{e['kind']} “{e['expected']}”: {e['detail']}" for e in failed)
-    return ""
+    return result.get("status", "") if not result.get("passed") else ""
 
 
 def _cell(text):
@@ -75,6 +103,10 @@ def _status(result):
         return "⚠️ not checked"
     if outcome == verdict.NOT_RUN:
         return "⏭️ not run"
+    if outcome == verdict.CHANGED:
+        return "📝 wording changed"
+    if outcome == verdict.FLAKY:
+        return "🟡 flaky (set aside)"
     if outcome == verdict.PASSED and result.get("attempts", 1) > 1:
         return "✅ passed on 2nd try"
     if result.get("passed") and result.get("expect_denied"):
@@ -94,8 +126,14 @@ def _access_cell(row):
 def headline(summary):
     checks = summary["total"] + summary.get("access_total", 0)
     unchecked = summary.get("not_checked", 0)
+    changed = summary.get("changed", 0)
+    also = f" · 📝 {changed} with new wording to review" if changed else ""
+    if summary.get("flaky"):
+        also += f" · 🟡 {summary['flaky']} flaky, set aside"
     if summary["failed"]:
-        return f"❌ {summary['failed']} of {checks} checks failed"
+        return f"❌ {summary['failed']} of {checks} checks failed{also}"
+    if changed or summary.get("flaky"):
+        return f"✅ Nothing broken found{also}"
     if unchecked:
         return (f"✅ Nothing broken found · ⚠️ {unchecked} of {checks} could not be checked "
                 f"(machine problem, not your app)")
@@ -150,12 +188,13 @@ def markdown(summary, results, access=()):
         f"{access_part} · {_seconds(summary['duration_ms'])} total",
     ]
     if results:  # an access-only run has no flow table
-        lines += ["", "| Flow | " + ("As | " if with_persona else "") + "Result | Time | Steps | Detail |",
-                  "|---|" + ("---|" if with_persona else "") + "---|---|---|---|"]
-    for r in results:
+        lines += ["", "| Flow | Level | " + ("As | " if with_persona else "") + "Result | Time | Steps | Detail |",
+                  "|---|---|" + ("---|" if with_persona else "") + "---|---|---|---|"]
+    for r in sorted(results, key=lambda r: importance.rank(r.get("importance"))):  # critical first
         persona = f"{r.get('persona') or 'guest'} | " if with_persona else ""
         lines.append(
-            f"| `{r['name']}` | {persona}{_status(r)} | {_seconds(r.get('duration_ms'))} "
+            f"| `{r['name']}` | {importance.LABELS[importance.level(r.get('importance'))]} | {persona}{_status(r)} "
+            f"| {_seconds(r.get('duration_ms'))} "
             f"| {len(r.get('steps', []))} | {_cell(_detail(r))} |"
         )
     failing = [r for r in results if verdict.of(r) == verdict.FAILED and r.get("steps")]
@@ -177,7 +216,7 @@ def junit(summary, results, access=()):
         name="everyrole",
         tests=str(summary["total"] + summary.get("access_total", 0)),
         failures=str(summary["failed"]),
-        skipped=str(summary.get("not_checked", 0) + summary.get("not_run", 0)),
+        skipped=str(summary.get("not_checked", 0) + summary.get("not_run", 0) + summary.get("flaky", 0)),
         time=f"{summary['duration_ms'] / 1000:.3f}",
     )
     for r in results:
@@ -185,7 +224,7 @@ def junit(summary, results, access=()):
             suite, "testcase", classname="everyrole", name=r["name"], time=f"{(r.get('duration_ms') or 0) / 1000:.3f}"
         )
         outcome = verdict.of(r)
-        if outcome in (verdict.NOT_CHECKED, verdict.NOT_RUN):
+        if outcome in (verdict.NOT_CHECKED, verdict.NOT_RUN, verdict.CHANGED, verdict.FLAKY):  # never fails CI
             ElementTree.SubElement(case, "skipped", message=_detail(r))
         elif outcome == verdict.FAILED:
             failure = ElementTree.SubElement(case, "failure", message=r.get("status", "failed"))

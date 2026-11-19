@@ -14,7 +14,7 @@ CONFIG = {
         "free": {"values": {"email": "{{secrets.FREE_EMAIL}}", "password": "{{secrets.FREE_PASSWORD}}"}},
         "guest": {"login": False},
     },
-    "access": {"/workspace/projects": {"allow": ["paid", "free"], "deny": ["guest"]}},
+    "access": {"/studio/films": {"allow": ["paid", "free"], "deny": ["guest"]}},
     "denied_when": [{"url_contains": "/login"}],
 }
 

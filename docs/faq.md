@@ -2,7 +2,7 @@
 
 **Is it free?**
 The CLI, the flow format and the GitHub Action are MIT-licensed. You pay your model provider for the calls your
-flows make (see [Bring your own AI key](ai-keys.md)); the access matrix, `validate` and `doctor` make none.
+flows make (see [Bring your own AI key](ai-keys.md)); the access matrix and `validate` make none, and `doctor` one tiny call per model.
 
 **Does EveryRole read my source code?**
 No. It only uses your app the way a user does, through a browser, at the URL you give it.

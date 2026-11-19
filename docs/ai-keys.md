@@ -56,7 +56,7 @@ A model setting set to an empty string counts as unset, so an undefined CI varia
 ## What it costs
 
 Only flow steps call a model: roughly one Jev call per action, plus one per typed field to pick the value.
-The access matrix, `validate` and `doctor` make no model calls, and each user type signs in once per run, not
+The access matrix and `validate` make no model calls (`doctor` makes one tiny call to each model), and each user type signs in once per run, not
 once per flow. `results.json` records the decisions and input tokens of every flow (`decisions`,
 `input_tokens`) and the run total (`summary.input_tokens`), so you can compute your own cost with your
 provider's prices.

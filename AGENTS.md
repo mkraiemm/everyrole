@@ -52,9 +52,10 @@ cli.py  ->  suite.py (SuiteRunner)  ->  one worker process per unit (worker.py: 
                                             '-> signin.py (saved sign-ins, no AI)
         ->  verdict.py -> report.py (summary.md = PR comment, results.json, junit.xml) + video.py + usage.py
         ->  github.py (`everyrole comment`: one PR comment, updated in place)
+ci.py (`everyrole ci`: an app's tests from EveryRole, logins from CI variables) -> `everyrole run` -> upload
 ```
 
-- `cli.py`: commands `validate`, `run`, `signin`, `doctor`, `comment`. `run` loads `.env` (`env.py`), the
+- `cli.py`: commands `validate`, `run`, `signin`, `doctor`, `comment`, `ci`. `run` loads `.env` (`env.py`), the
   config and flows (`spec.py`, `site.py`), sets the run's memory/CPU caps (`limits.py`) and network pace
   (`pace.py`), starts Chrome (`chrome.py`), runs the suite, writes the report, returns the exit code
   (0 ok, 1 app failure, 2 nothing could be checked).

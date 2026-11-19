@@ -51,7 +51,7 @@ ok    Model provider reachable: https://ai-gateway.vercel.sh/typesafe/v1/systemo
 Ready to test.
 ```
 
-`doctor` calls no model. Every line that is not `ok` says how to fix it; see
+`doctor` makes one tiny call (a few tokens) to each model you set. Every line that is not `ok` says how to fix it; see
 [Troubleshooting](troubleshooting.md).
 
 ## 4. Run the demo

@@ -12,8 +12,9 @@ import argparse
 import json
 import os
 import sys
+import time
 
-from . import daemons, pace
+from . import daemons, pace, processes
 from .env import load_dotenv
 from .session import load
 from .site import resolve
@@ -49,11 +50,18 @@ def main(argv=None):
     try:
         return _main(argv)
     finally:
-        # every mode, every exit path: no daemon outlives its worker. The harness only stops a daemon it can
-        # verify, and removes its pid file either way: stop ours by that pid file first, then let it tidy up.
-        if os.environ.get(daemons.ENV):
-            daemons.stop(os.environ[daemons.ENV])
-        stop_own_daemon()
+        stop_daemons()  # every mode, every exit path: no daemon outlives its worker
+
+
+def stop_daemons():
+    """Stops every browser-control daemon this worker started. The harness only stops a daemon it can verify, and
+    removes its pid file either way: stop ours by that pid file first, then let it tidy up. A daemon too busy to
+    answer when the next browser was opened was replaced, and that one pid file forgot it: then every process this
+    worker started goes, recorded or not."""
+    if os.environ.get(daemons.ENV):
+        daemons.stop(os.environ[daemons.ENV])
+    stop_own_daemon()
+    processes.stop_children()
 
 
 def _main(argv=None):
@@ -72,8 +80,17 @@ def _main(argv=None):
                 site=site, persona=args.persona, rules=rules, denied_when=config.denied_when,
                 settle_s=config.access_settle_s, session_state=state,
             )
-            _emit([r.as_dict() for r in results])
+            _emit(_mark_signed_out([r.as_dict() for r in results], config, args.persona, site, state))
             return 0 if all(r.passed for r in results) else 1
+        if args.mode == "login" and config.personas[args.persona].login_link:
+            from .login_link import sign_in
+            from .session import save
+
+            result, signed = sign_in(config, args.persona, site=site, run_id=args.run_id)
+            if signed is not None and args.save_session:
+                save(signed, args.save_session)
+            _emit(result)
+            return 0 if result["passed"] else 1
         if args.mode == "login" and config.personas[args.persona].saved_signin:
             from .session import save
             from .signin import check
@@ -84,6 +101,19 @@ def _main(argv=None):
             _emit(result)
             return 0 if result["passed"] else 1
         if args.mode == "login":
+            from . import kept_session
+
+            kept = kept_session.reuse(config, args.persona, site=site)
+            if kept is not None:  # still signed in by email from an earlier job: no new link to ask for
+                from .session import save
+                from .signin import _result
+
+                if args.save_session:
+                    save(kept[0], args.save_session)
+                _emit({**_result(f"login@{args.persona}", args.persona, True, "passed", "", "", time.monotonic(),
+                                 time.monotonic), "saved_signin": False, "kept_session": True,
+                       "final_url": site.url(kept[1]) if site else kept[1]})
+                return 0
             flow = login_flow(config, args.persona, site=site, run_id=args.run_id)
         else:
             flows = load_flow_file(args.flow_file, config=config, site=site, run_id=args.run_id)
@@ -98,9 +128,39 @@ def _main(argv=None):
 
     result = FlowRunner(pace=pace.shared(config.run)).run(flow, output_dir=args.output, session_state=state,
                                                           save_session_to=args.save_session,
-                                                          record_dir=args.record_dir, site=site)
+                                                          record_dir=args.record_dir, site=site,
+                                                          signed_out=_signed_out_check(config, flow, site, state))
+    if flow.is_login and result.passed and result.signed_in_by == "email" and args.save_session:
+        from . import kept_session
+
+        kept_session.keep(config, flow.persona, args.save_session, site.page(result.final_url) if site else "/")
     _emit(result.as_dict())
     return 0 if result.passed else 1
+
+
+def _signed_out_check(config, flow, site, state):
+    """For a test that runs signed in: how to tell its session expired mid-run. None for a test that must be sent
+    away (being refused is its point), one that changes its own password (suite.py signs in after it), a sign-in."""
+    if state is None or not flow.persona or flow.is_login or flow.expect_denied or flow.changes_password:
+        return None
+    from .signin import SignedOut
+
+    return SignedOut.of(config, flow.persona, site=site)
+
+
+def _mark_signed_out(rows, config, persona, site, state):
+    """Access rows of a signed-in user type: a page that should open but sent the browser to the sign-in page says
+    the session expired mid-run (`signed_out`), not that the page is closed."""
+    check = None
+    if state is not None:
+        from .signin import SignedOut
+
+        check = SignedOut.of(config, persona, site=site)
+    for row in rows:
+        why = check.page(row.get("url")) if check and row["expected"] == "allow" and row["observed"] == "denied" else ""
+        if why:
+            row["signed_out"] = why
+    return rows
 
 
 def stop_own_daemon():

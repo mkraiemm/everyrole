@@ -31,7 +31,7 @@ def test_a_job_stops_every_daemon_its_workers_left_and_removes_their_folder(tmp_
 
 
 def test_one_workers_daemon_can_be_stopped_alone(tmp_path):
-    mine, other = _daemon(tmp_path, "sw-1-login-paid", str), _daemon(tmp_path, "sw-1-projects-paid", str)
+    mine, other = _daemon(tmp_path, "sw-1-login-paid", str), _daemon(tmp_path, "sw-1-films-paid", str)
     try:
         assert daemons.stop(tmp_path, name="sw-1-login-paid") == 1
         mine.wait(timeout=10)

@@ -121,8 +121,29 @@ class Chrome:
         ]
         if hasattr(os, "geteuid") and os.geteuid() == 0:
             args.append("--no-sandbox")  # containers commonly run as root, where the sandbox cannot start
+        args += egress_args(os.environ)
         self._process = limits.active().launch(args + ["about:blank"], stdout=subprocess.DEVNULL,
                                                stderr=subprocess.DEVNULL)  # inside the job's caps, if any
+
+
+EGRESS_PROXY_ENV = "EVERYROLE_EGRESS_PROXY"  # an egress proxy every request goes through, when set: host:port
+
+
+def egress_proxy(environ=None):
+    """The egress proxy as a URL ("http://127.0.0.1:port") for a job's own requests (httpx's `proxy=`), or None
+    when none is set: then any address is reached, localhost included."""
+    proxy = (os.environ if environ is None else environ).get(EGRESS_PROXY_ENV, "")
+    return f"http://{proxy}" if proxy else None
+
+
+def egress_args(environ):
+    """With an egress proxy set, every request of the browser goes through it: loopback too (Chrome sends it around
+    a proxy by default), and no WebRTC traffic around it. [] without one."""
+    proxy = environ.get(EGRESS_PROXY_ENV, "")
+    if not proxy:
+        return []
+    return [f"--proxy-server=http://{proxy}", "--proxy-bypass-list=<-loopback>",
+            "--force-webrtc-ip-handling-policy=disable_non_proxied_udp", "--disable-quic"]
 
 
 def close_tabs(cdp_url, target_ids):

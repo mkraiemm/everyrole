@@ -17,7 +17,7 @@ class Agent:
     def __init__(
         self, url, goals, *, record_dir=None, screenshots=False,
         max_steps=MAX_STEPS, text_provider=None, before_execute=None, browser_options=None, after_action=None,
-        stop_needs_fresh_page=True,
+        stop_needs_fresh_page=True, fill_before_submit=False,
     ):
         task = goals.strip() if isinstance(goals, str) else "\n".join(goals).strip()
         if not task:
@@ -34,6 +34,10 @@ class Agent:
         # DONE/BLOCKED make no browser input. Callers that judge the outcome themselves can accept them even
         # when live content (tickers) changed the page since the decision.
         self.stop_needs_fresh_page = stop_needs_fresh_page
+        # P27: a submit while its form still has an empty field the form needs fills that field first (a sign-in:
+        # the model pressed "Log in" with the email and password fields empty). Off by default: a test may mean to
+        # send a form empty, to see the app's own error.
+        self.fill_before_submit = fill_before_submit
         self.browser = Browser(url, **(browser_options or {}))
         self.record_dir = Path(record_dir) if record_dir else None
         self.screenshots = screenshots or bool(record_dir)
@@ -120,6 +124,9 @@ class Agent:
                 state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
                 return self.snapshot()
             action = next(a for a in page["actions"] if a["id"] == selected)
+            chosen = action
+            if self.fill_before_submit:
+                action = self._missing_fill(action, page)
             if len(state["history"]) >= self.max_steps:
                 state["status"] = "blocked"
                 raise BudgetExceeded(f"Stopped at the {self.max_steps}-action budget")
@@ -137,7 +144,7 @@ class Agent:
             if self.before_execute:
                 self.before_execute(action, page, text)
             # Browser.act checks freshness immediately before input, including after text generation.
-            state["browser"].act(action, page, text=text)
+            done = state["browser"].act(action, page, text=text)
             self.pending_text = None
             state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
             # Record execution before observing. A stale post-action observation must not erase the action.
@@ -160,6 +167,10 @@ class Agent:
                     "usage": decision["usage"],
                     "executed_ms": round((time.perf_counter() - state["started_at"]) * 1000),
                     "elapsed_ms": state["elapsed_ms"],
+                    # P26: where the input went on the screen (the replay draws the cursor and focus ring there)
+                    "point": done.get("point") if isinstance(done, dict) else None,
+                    # P27: the model chose to send the form; this field was empty, so it was filled first
+                    **({"instead_of": chosen["label"]} if action is not chosen else {}),
                 }
             )
             if self.after_action:
@@ -181,12 +192,40 @@ class Agent:
             repeated = state["history"][-3:]
             state["status"] = (
                 "blocked"
-                if len(repeated) == 3 and all(h["page_changed"] is False and h["kind"] != "wait" for h in repeated)
+                if (len(repeated) == 3 and all(h["page_changed"] is False and h["kind"] != "wait" for h in repeated))
+                or self._in_circles(action)
                 else "ready"
             )
         else:
             raise ValueError("Unknown command")
         return self.snapshot()
+
+    def _missing_fill(self, action, page):
+        """P27: the fill to do before `action` sends its form: its first empty field the form needs, when that field
+        is offered on the page; else `action` itself."""
+        for node in self.state["browser"].empty_before_submit(action):
+            fill = next((a for a in page["actions"] if a["kind"] == "fill" and a.get("node") == node), None)
+            if fill is not None:
+                return fill
+        return action
+
+    CIRCLES = 2  # scrolls back to a spot already reached twice before it counts as going in circles
+
+    def _in_circles(self, action):
+        """P20: True once scrolling keeps returning to the same spots of the same page (down, up, down, up...): every
+        part of it was already seen, so more scrolling finds nothing new. Failing tests did this until their 40 or
+        80 step budget ran out, one model call per step (automationexercise.com, 2026-11-17)."""
+        page = self.state["page"]
+        # a spot is a band of half a screen: scrolling back lands a few pixels off where it was (a carousel, lazy
+        # images), and that is still the same part of the page
+        band = max(1, (page.get("h") or 0) // 2)
+        spot = (page.get("url"), int((page.get("scroll") or {}).get("y") or 0) // band)
+        seen = self.state.setdefault("spots", {})
+        seen[spot] = seen.get(spot, 0) + 1
+        if action["kind"] != "scroll" or seen[spot] <= self.CIRCLES:
+            return False
+        self.state["circles"] = self.state.get("circles", 0) + 1
+        return self.state["circles"] >= self.CIRCLES
 
     def run(self):
         while self.state["status"] not in {"done", "blocked"}:

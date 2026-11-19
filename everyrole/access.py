@@ -1,13 +1,15 @@
 """Access matrix: can this persona open this page? Deterministic, zero model calls.
 
 A page counts as DENIED when the browser ends up on a different page than the one requested (the app
-redirected the user away: to the home page, a login page, an upgrade page...) or when any of the app's
-optional `denied_when` checks passes on it ("no access" text shown in place). It is ALLOWED only when
+redirected the user away: to the home page, a login page, an upgrade page...), when the app answered the page
+itself with a refusal (HTTP 401, 403, 404 or 410: "not yours", or "no such page" to hide it), or when any of the
+app's optional `denied_when` checks passes on it ("no access" text shown in place). It is ALLOWED only when
 `access_settle_s` has passed without a denial AND the page has finished loading (no request in flight, nothing
 changing): a page still waiting for the app's answer may yet send the user away, so it is not judged ("unsure",
 shown as couldn't check) rather than called open. All pages for one persona are opened in parallel tabs and
 watched together. A page that could not be read, or whose answer disagrees with the rule, is checked again
-alone once: parallel tabs on a busy machine are slow, and a slow page must not look like an open door.
+alone once: parallel tabs on a busy machine are slow, and a slow page must not look like an open door. (A run
+also checks the pages still not judged once more after everything else, one at a time: suite.py.)
 """
 
 import time
@@ -16,10 +18,14 @@ from dataclasses import asdict, dataclass
 from urllib.parse import urlparse
 
 from . import assertions, inject, verdict
-from .pagewait import Steadiness, chain, read_state, track_network
+from .pagewait import Steadiness, chain, describe_pending, read_pending, read_state, track_network
 from .runner import read_facts
 from .session import restorer
 from .spec import site_of
+
+# the app's own answer for the page says no: not signed in, forbidden, or hidden as missing
+DENIED_STATUSES = (401, 403, 404, 410)
+DOCUMENT_STATUS = "(performance.getEntriesByType('navigation')[0] || {}).responseStatus || 0"
 
 
 @dataclass
@@ -60,10 +66,17 @@ def expected_rules(config, persona):
 
 class AccessChecker:
     def __init__(self, *, browser_factory=_browser_factory, facts_reader=read_facts, clock=time.monotonic,
-                 sleep=time.sleep, poll_s=0.25, pace=None, page_state=None, stable_reads=3):
+                 sleep=time.sleep, poll_s=0.25, pace=None, page_state=None, stable_reads=3, quiet_tail_s=2.0,
+                 pending_reader=None, status_reader=None):
         self._browser = browser_factory
+        self._status = status_reader or _document_status  # browser -> the HTTP status the page was answered with
         self._page_state = page_state or _where_and_quiet  # browser -> (state, idle) or None
+        self._pending = pending_reader or read_pending  # browser -> what a page still waits for
         self._stable_reads = stable_reads
+        # a page that keeps polling in the background is never quiet for long: it has answered when it was quiet
+        # at some moment near the end of the window (a page still waiting for the app's answer never is)
+        self._quiet_tail_s = quiet_tail_s
+        self._open_waits_s = (1.0, 2.0)  # between tries of opening a page our browser helper dropped
         self._pace = pace  # the job's network pace (see pace.py): each page waits for room to load
         self._facts = facts_reader
         self._clock = clock
@@ -82,8 +95,7 @@ class AccessChecker:
         try:
             for path, expected in rules:
                 try:
-                    with self._pace.page(site.url(path)) if self._pace else nullcontext():
-                        tab = self._browser(site.url(path), **options)
+                    tab = self._open(site.url(path), options)
                     tabs.append((path, expected, tab))
                     if getattr(tab, "context", None) and "context" not in options:
                         # the batch's other pages share this one's session: same cookies, fewer connections
@@ -95,7 +107,7 @@ class AccessChecker:
             pending = {path: (expected, browser) for path, expected, browser in tabs}
             last = {}
             steady = {path: Steadiness(self._stable_reads) for path in pending}
-            settled = {}
+            settled, quiet_at = {}, {}
             while pending:
                 for path, (expected, browser) in list(pending.items()):
                     try:
@@ -106,13 +118,18 @@ class AccessChecker:
                     last[path] = facts
                     hits = [o for o in assertions.evaluate(checks, facts) if o.passed]
                     landed, wanted = _page(site, facts.url), _page(site, site.url(path))
-                    if hits or landed != wanted:
+                    status = self._status(browser) if landed == wanted else 0
+                    if hits or landed != wanted or status in DENIED_STATUSES:
                         where = landed or urlparse(facts.url).hostname or facts.url  # outside the app: its host
-                        why = f"{hits[0].kind} “{hits[0].expected}”" if hits else f"redirected to {where}"
+                        why = (f"{hits[0].kind} “{hits[0].expected}”" if hits else f"redirected to {where}"
+                               if landed != wanted else f"answered HTTP {status}")
                         results[path] = self._result(path, persona, expected, "denied", facts, why)
                         del pending[path]
                         continue
-                    settled[path] = steady[path].read(self._page_state(browser))
+                    reading = self._page_state(browser)
+                    settled[path] = steady[path].read(reading)
+                    if reading is not None and reading[1]:
+                        quiet_at[path] = self._clock()
                 if not pending or self._clock() >= deadline:
                     break
                 self._sleep(self._poll_s)
@@ -121,12 +138,14 @@ class AccessChecker:
                 if facts is None:
                     results[path] = AccessResult(path, persona, expected, "error", False,
                                                  detail="page never became readable")
-                elif settled.get(path):
+                elif settled.get(path) or quiet_at.get(path, float("-inf")) >= deadline - self._quiet_tail_s:
                     results[path] = self._result(path, persona, expected, "allowed", facts,
                                                  f"no denial signal within {settle_s}s")
                 else:
+                    waiting = describe_pending(self._pending(_browser))
                     results[path] = AccessResult(path, persona, expected, "unsure", False, url=facts.url,
-                                                 detail=f"still loading after {settle_s}s: not judged")
+                                                 detail=f"still loading after {settle_s}s: not judged"
+                                                        + (f" ({waiting})" if waiting else ""))
         finally:
             for _path, _expected, browser in reversed(tabs):  # the tab that owns the shared session goes last
                 try:
@@ -143,10 +162,30 @@ class AccessChecker:
                     results[path].detail = f"passed when checked again alone (first: {first.detail})"
         return [results[path] for path, _ in rules]
 
+    def _open(self, url, options):
+        """Open one page. Our browser helper sometimes drops or refuses a connection while many tabs open at once:
+        a short, growing wait and a new try (never a hammering loop, never the app's fault)."""
+        for attempt, wait_s in enumerate(self._open_waits_s + (None,)):
+            try:
+                with self._pace.page(url) if self._pace else nullcontext():
+                    return self._browser(url, **options)
+            except (ConnectionError, FileNotFoundError, TimeoutError, OSError, RuntimeError):  # browser side
+                if wait_s is None:
+                    raise
+                self._sleep(wait_s)
+
     @staticmethod
     def _result(path, persona, expected, observed, facts, detail):
         passed = (expected == "allow") == (observed == "allowed")
         return AccessResult(path, persona, expected, observed, passed, url=facts.url, detail=detail)
+
+
+def _document_status(browser):
+    """The HTTP status the page itself was answered with; 0 when unknown (mid-navigation, an old browser)."""
+    try:
+        return int(browser.evaluate(DOCUMENT_STATUS) or 0)
+    except Exception:
+        return 0
 
 
 def _where_and_quiet(browser):

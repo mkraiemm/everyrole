@@ -31,10 +31,12 @@ class FakeAgent:
     """Replays a script of steps through the same hooks the real engine calls."""
 
     def __init__(self, script, final_status, url, goal, *, max_steps, text_provider, before_execute,
-                 browser_options=None, after_action=None, stop_needs_fresh_page=True):
+                 browser_options=None, after_action=None, stop_needs_fresh_page=True,
+                 fill_before_submit=False):
         self.script, self.final_status = script, final_status
         self.hooks = {"text_provider": text_provider, "before_execute": before_execute}
         self.max_steps, self.browser_options = max_steps, browser_options or {}
+        self.fill_before_submit = fill_before_submit
         self.browser = FakeBrowser()
         self.history, self.decisions, self.status, self.closed = [], [], "ready", False
 
@@ -295,21 +297,21 @@ def test_failed_flow_never_saves_a_session(monkeypatch, tmp_path):
 
 
 def test_text_that_only_exists_while_loading_does_not_pass():
-    # The page shows "Opening Workspace" while it loads, then the real workspace replaces it.
-    script = [{"label": "Workspace", "url": "https://app.example.com/dashboard", "text": "Opening Workspace"}]
+    # The page shows "Opening Brand Studio" while it loads, then the real studio replaces it.
+    script = [{"label": "Brand Studio", "url": "https://app.example.com/dashboard", "text": "Opening Brand Studio"}]
     runner, _, agents = make_runner(script, final_status="done")
 
     def finish_loading(browser, **_):
-        browser.text = "Workspace · Projects"  # loading finished
+        browser.text = "Brand Studio · Projects"  # loading finished
         return True
 
     runner._wait_stable = finish_loading
-    result = runner.run(flow(expect=[{"text_visible": "Opening Workspace"}], settle_s=0))
+    result = runner.run(flow(expect=[{"text_visible": "Opening Brand Studio"}], settle_s=0))
     assert result.status == "failed_expect" and not result.passed
 
 
 def test_checks_that_hold_on_the_loaded_page_pass_and_stop_early():
-    script = [{"label": "Reports", "url": "https://app.example.com/dashboard", "text": "Your reports LOADING"},
+    script = [{"label": "Films", "url": "https://app.example.com/dashboard", "text": "Your films LOADING"},
               {"label": "Should never run"}]
     runner, _, agents = make_runner(script)
     runner.agents = agents
@@ -317,13 +319,13 @@ def test_checks_that_hold_on_the_loaded_page_pass_and_stop_early():
 
     def finish_loading(browser, **_):
         waited.append(True)
-        browser.text = "Your reports Launch plan Projects"
+        browser.text = "Your films Launch video Projects"
         return True
 
     runner._wait_stable = finish_loading
-    result = runner.run(flow(expect=[{"url_contains": "/dashboard"}, {"text_visible": "Your reports"}]))
-    assert result.passed and waited and [s["action"] for s in result.steps] == ["Reports"]
-    assert agents_browser_text(runner) == "Your reports Launch plan Projects"  # judged on the loaded page
+    result = runner.run(flow(expect=[{"url_contains": "/dashboard"}, {"text_visible": "Your films"}]))
+    assert result.passed and waited and [s["action"] for s in result.steps] == ["Films"]
+    assert agents_browser_text(runner) == "Your films Launch video Projects"  # judged on the loaded page
 
 
 def agents_browser_text(runner):
@@ -434,11 +436,11 @@ def test_whole_page_controls_count_for_element_checks():
     class Page:
         def evaluate(self, expression):
             if "querySelectorAll" in expression:
-                return '["Create report", "Paste a link to your page"]'
+                return '["Generate report", "Paste your website or product URL"]'
             return "https://app.io/" if "location" in expression else "hero text"
 
     facts = read_facts(Page(), {"actions": [{"label": "Pricing"}]})
-    assert {"Pricing", "Create report", "Paste a link to your page"} <= set(facts.labels)
+    assert {"Pricing", "Generate report", "Paste your website or product URL"} <= set(facts.labels)
 
 
 def test_agent_stuck_at_the_bottom_goes_back_to_the_top_once():
@@ -499,3 +501,100 @@ def test_a_used_up_budget_is_a_result_not_a_machine_problem():
     result = runner.run(flow(settle_s=0))
     assert result.status == "budget_exceeded" and not result.passed
     assert verdict.cause_of(result.as_dict()) == verdict.APP  # the goal was never reached: the test fails
+
+
+def test_a_form_test_whose_checks_held_before_it_started_does_the_whole_task_and_is_flagged():
+    # "A free user can set their password", checking only the page's own heading: it used to stop after typing into
+    # the first field; now it does every step, and it is flagged: its checks prove nothing about the task
+    runner, _, _ = make_runner([{"label": "New password", "kind": "fill"},
+                                {"label": "Save", "url": "https://app.example.com/login?saved"}])
+    result = runner.run(flow(name="set-password", goal="Set a password", values={"new": "a-long-password"},
+                             expect=[{"text_visible": "Sign in"}]))
+    assert result.passed and [s["action"] for s in result.steps] == ["New password", "Save"]
+    assert result.proves_nothing and "doesn't prove the task" in " ".join(result.warnings)
+
+
+def test_a_form_test_that_checks_its_outcome_still_stops_as_soon_as_it_holds():
+    runner, _, _ = make_runner(LOGIN)
+    result = runner.run(flow())  # "/dashboard" and "Projects" only after signing in
+    assert result.passed and not result.proves_nothing and len(result.steps) == 3
+
+
+def test_a_page_check_may_check_the_page_it_opens():
+    runner, _, _ = make_runner([{"label": "Look"}])
+    result = runner.run(flow(name="terms", goal="Open the terms", values={}, expect=[{"text_visible": "Sign in"}]))
+    assert result.passed and not result.proves_nothing
+
+
+def test_a_failed_test_that_ended_signed_out_says_why_and_a_passing_one_never_does():
+    seen = []
+
+    def signed_out(facts):
+        seen.append(facts.url)
+        return "it ended on the sign-in page" if facts.url.endswith("/login") else ""
+
+    runner, _, _ = make_runner([{"label": "Billing", "url": "https://app.example.com/login", "text": "Sign in"}])
+    result = runner.run(flow(settle_s=0), session_state={"cookies": []}, signed_out=signed_out)
+    assert not result.passed and result.signed_out == "it ended on the sign-in page"
+    runner, _, _ = make_runner(LOGIN)
+    seen.clear()
+    assert runner.run(flow(), session_state={"cookies": []}, signed_out=signed_out).signed_out == "" and not seen
+
+
+def test_a_failed_test_says_what_its_last_page_showed_as_text_without_secrets():
+    """An agent can't watch a replay: a failed test keeps the start of its last page's text (secrets redacted)."""
+    from everyrole.runner import PAGE_TEXT_CHARS, page_excerpt
+
+    script = [{"label": "Email", "kind": "fill"},
+              {"label": "Sign in", "url": "https://app.example.com/login?failed=1",
+               "text": "Wrong password for qa@example.com\n\n\n   Try    again  "}]
+    runner, _, _ = make_runner(script, final_status="done")
+    failed = runner.run(flow(settle_s=0))
+    assert not failed.passed and failed.final_url == "https://app.example.com/login?failed=1"
+    assert failed.page_text == "Wrong password for [secret:QA_EMAIL]\nTry again" and failed.blocked_saves == []
+    passing = make_runner(LOGIN)[0].run(flow())
+    assert passing.passed and passing.page_text == "" and passing.blocked_saves == []
+    long = page_excerpt("word " * 1000)
+    assert len(long) <= PAGE_TEXT_CHARS + 1 and long.endswith("…") and page_excerpt(None) == ""
+
+
+def test_the_page_is_read_more_often_after_a_scroll():
+    """Every step waited at least 1.2 s for the page to settle (3 steady reads 0.4 s apart), scrolls too, and scrolls
+    were 9 steps in 10 on production (2026-11-17). After a scroll the page is read every 0.15 s; after anything
+    else as before."""
+    from types import SimpleNamespace
+
+    from everyrole import runner as runner_module
+
+    polls = []
+    runner = FlowRunner(agent_factory=None, outbound_filters=lambda: [], value_chooser=StubValues,
+                        clock=lambda: 0, sleep=lambda s: None,
+                        wait_stable=lambda browser, **k: polls.append(k["poll_s"]) or True)
+    runner._typing = SimpleNamespace(typed=lambda browser: None)
+    for kind in ("scroll", "click", None):
+        runner._after_action(SimpleNamespace(after_input={"kind": kind} if kind else None), flow())
+    assert polls == [runner_module.SCROLL_POLL_S, runner._poll_s, runner._poll_s]
+    assert runner_module.SCROLL_POLL_S < runner._poll_s
+
+
+def test_a_steps_own_browser_alerts_are_judged_and_remembered():
+    """demoblaze (2026-11-18): "Product added." is a browser alert. A step sees the alerts shown since it began (not
+    an earlier step's), and the page it is remembered by says them, so later plans know the app's words."""
+    from types import SimpleNamespace
+
+    from everyrole.runner import FlowRunner
+
+    shown = ["Welcome back."]
+
+    class Page:
+        def evaluate(self, expression):
+            assert "__jevDialogs" in expression
+            return list(shown)
+
+    runner = FlowRunner.__new__(FlowRunner)
+    agent = SimpleNamespace(browser=Page())
+    runner._dialogs_from = len(runner._page_dialogs(agent.browser))  # the step begins
+    shown.append("Product added.")
+    page = runner._with_alerts({"url": "https://shop.example/prod", "text": "Samsung galaxy s6"}, agent)
+    assert page["text"] == "Samsung galaxy s6\nBrowser alert: Product added."
+    assert runner._with_alerts({}, agent) == {}

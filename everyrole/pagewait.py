@@ -13,19 +13,42 @@ TRACKER = """(() => {
   if (window.__swTracked) return;
   window.__swTracked = true;
   window.__swInflight = 0;
-  const done = () => { window.__swInflight = Math.max(0, window.__swInflight - 1); };
+  window.__swPending = new Map();  // what is in flight, to say what a page that never settles is waiting for
+  let next = 0;
+  const where = (url) => {  // host and path, never the query: it may hold tokens
+    try { const u = new URL(url, location.href); return u.host + u.pathname; }
+    catch (e) { return String(url).split("?")[0]; }
+  };
+  const start = (kind, url) => {
+    const id = ++next;
+    window.__swPending.set(id, [kind, where(url), Date.now()]);
+    return id;
+  };
+  const done = (id) => () => {
+    window.__swInflight = Math.max(0, window.__swInflight - 1);
+    window.__swPending.delete(id);
+  };
   const fetch = window.fetch;
   if (fetch) window.fetch = function (...args) {
     window.__swInflight++;
-    return fetch.apply(this, args).finally(done);
+    const id = start("fetch", args[0] && args[0].url || args[0]);
+    return fetch.apply(this, args).finally(done(id));
+  };
+  const open = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+    this.__swUrl = url;
+    return open.call(this, method, url, ...rest);
   };
   const send = XMLHttpRequest.prototype.send;
   XMLHttpRequest.prototype.send = function (...args) {
     window.__swInflight++;
-    this.addEventListener("loadend", done, { once: true });
+    this.addEventListener("loadend", done(start("xhr", this.__swUrl)), { once: true });
     return send.apply(this, args);
   };
 })()"""
+
+PENDING = ("[...(window.__swPending || new Map()).values()]"
+           ".map(([kind, where, since]) => [kind, where, (Date.now() - since) / 1000])")
 
 PAGE_STATE = ("[document.readyState, document.body ? document.body.innerText.length : 0, "
               "document.getElementsByTagName('*').length, location.href, "
@@ -56,6 +79,25 @@ def read_state(browser):
     except Exception:
         return None
     return state, not isinstance(state, list) or len(state) < 6 or state[5] == 0
+
+
+def read_pending(browser):
+    """-> [(kind, host and path, seconds in flight)] of the requests a page is still waiting for ([] if unknown)."""
+    try:
+        found = browser.evaluate(PENDING)
+    except Exception:
+        return []
+    return [(k, w, float(s)) for k, w, s in found] if isinstance(found, list) else []
+
+
+def describe_pending(pending, limit=3):
+    """"waiting for xhr api.app.io/poll (4.9 s)" — the oldest first, for a result a person reads."""
+    if not pending:
+        return ""
+    oldest = sorted(pending, key=lambda item: -item[2])
+    shown = ", ".join(f"{kind} {where} ({age:.1f} s)" for kind, where, age in oldest[:limit])
+    more = f" and {len(oldest) - limit} more" if len(oldest) > limit else ""
+    return f"waiting for {shown}{more}"
 
 
 class Steadiness:

@@ -2,8 +2,9 @@
 
 The engine saves one JPEG per observation, named by milliseconds since the flow started. Each frame is
 shown until the next one was taken, so the video plays at the speed the flow really ran; the last frame
-(the page the checks were judged on) is held a little longer. Needs ffmpeg (on PATH or FFMPEG_PATH);
-without it the frames are kept and no video is made.
+(the page the checks were judged on) is held a little longer. A long time with nothing new on screen (a journey
+waiting for slow work, a film being made) plays as IDLE_S: the replay shows what happened, not the wait. Needs
+ffmpeg (on PATH or FFMPEG_PATH); without it the frames are kept and no video is made.
 """
 
 import os
@@ -11,10 +12,15 @@ import shutil
 import subprocess
 from pathlib import Path
 
+IDLE_S = 5.0  # the longest any one frame is shown (a 40-minute wait would otherwise be a 40-minute video)
+
 
 def find_ffmpeg(environ=None):
     environ = os.environ if environ is None else environ
     return environ.get("FFMPEG_PATH") or shutil.which("ffmpeg")
+
+
+ENCODE_TIMEOUT_S = 120  # the longest a replay's encoding may take (suite.py lets a test be quiet that long)
 
 
 def frames(directory):
@@ -26,7 +32,7 @@ def concat_list(frame_paths, hold_s):
     lines = ["ffconcat version 1.0"]
     for i, frame in enumerate(frame_paths):
         if i + 1 < len(frame_paths):
-            duration = (int(frame_paths[i + 1].stem) - int(frame.stem)) / 1000
+            duration = min((int(frame_paths[i + 1].stem) - int(frame.stem)) / 1000, IDLE_S)
         else:
             duration = hold_s
         lines += [f"file '{frame.name}'", f"duration {max(duration, 0.05):.3f}"]
@@ -35,7 +41,22 @@ def concat_list(frame_paths, hold_s):
 
 
 def total_seconds(frame_paths, hold_s):
-    return (int(frame_paths[-1].stem) - int(frame_paths[0].stem)) / 1000 + hold_s
+    shown = sum(min((int(b.stem) - int(a.stem)) / 1000, IDLE_S) for a, b in zip(frame_paths, frame_paths[1:]))
+    return shown + hold_s
+
+
+def on_replay(ms, frame_ms):
+    """A moment of the run (ms since it started) -> where it plays in the replay, whose idle stretches are cut to
+    IDLE_S (frame_ms: when each frame was taken)."""
+    times, idle = sorted(frame_ms), IDLE_S * 1000
+    if not times or ms <= times[0]:
+        return ms
+    played, previous = times[0], times[0]
+    for taken in times[1:]:
+        if ms <= taken:
+            break
+        played, previous = played + min(taken - previous, idle), taken
+    return int(played + min(ms - previous, idle))
 
 
 def make_video(frames_dir, out_path, *, hold_s=2.0, fps=10, ffmpeg=None, keep_frames=False):
@@ -55,7 +76,8 @@ def make_video(frames_dir, out_path, *, hold_s=2.0, fps=10, ffmpeg=None, keep_fr
         str(out_path.resolve()),
     ]
     try:
-        done = subprocess.run(command, cwd=frames_dir, capture_output=True, text=True, timeout=120)
+        done = subprocess.run(command, cwd=frames_dir, capture_output=True, text=True,
+                              timeout=ENCODE_TIMEOUT_S)
     except (OSError, subprocess.TimeoutExpired):
         return ""
     if done.returncode != 0 or not out_path.is_file():
@@ -81,9 +103,14 @@ def last_frame(video_path, out_path, *, ffmpeg=None):
     return str(out_path) if done.returncode == 0 and out_path.is_file() else ""
 
 
-def timeline(steps, duration_ms):
-    """Captions for the player: when each step happened, in plain words."""
+def timeline(steps, duration_ms, judged=()):
+    """Captions for the player: when each step happened, in plain words. `judged`: a journey's steps
+    (runner.FlowResult.steps_judged), each marked where its checks were judged."""
     marks = [{"ms": 0, "label": "Start"}]
+    for step in judged:
+        verdict = "passed" if step.get("passed") else "failed"
+        marks.append({"ms": int(step.get("at_ms") or 0),
+                      "label": f"Step {step['step']} {verdict}: {step.get('goal', '')}".strip()})
     for step in steps:
         action = (step.get("action") or "").strip()
         kind = step.get("kind") or ""
@@ -95,4 +122,4 @@ def timeline(steps, duration_ms):
             label += f" “{action}”"
         marks.append({"ms": int(step.get("executed_ms") or 0), "label": label})
     marks.append({"ms": int(duration_ms or 0), "label": "Checks judged on this page"})
-    return marks
+    return sorted(marks, key=lambda mark: mark["ms"])

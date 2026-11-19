@@ -37,6 +37,24 @@ IPC_TIMEOUT_S = float(os.environ.get("JEV_IPC_TIMEOUT_S", "20"))
 # Atomically read visible content and controls, preserving actual DOM node identity.
 READ_STATE = Path(__file__).with_name("snapshot.js").read_text()
 MARKER = f"(() => {{ const state={READ_STATE}; return state?.marker ?? null; }})()"
+# P27: the fields of the form an action would send that are still empty (see Browser.empty_before_submit)
+EMPTY_BEFORE_SUBMIT = """((node, enter) => {
+  const c=window.__jevFast, e=c?.nodes.get(node);
+  if (!e?.isConnected) return [];
+  const field=f=>f.matches('textarea,input:not([type=hidden],[type=checkbox],[type=radio],[type=submit],[type=button],'+
+    '[type=reset],[type=image],[type=file],[type=range],[type=color])');
+  // Enter in one of its fields, or a click on its own submit button (a click into a field only puts the cursor there)
+  const form=field(e) ? (enter ? e.form : null) :
+    (!enter && e.matches('button,input[type=submit],input[type=image]') && ['submit','image'].includes(e.type) ? e.form
+      : null);
+  if (!form) return [];
+  const fields=[...form.elements].filter(f=>field(f) && !f.disabled && !f.readOnly &&
+    f.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}));
+  const first=fields.findIndex(f=>f.type==='password');
+  const account=first>0 ? fields.slice(0,first).reverse().find(f=>['text','email','tel'].includes(f.type)) : null;
+  return fields.filter(f=>!f.value && (f.required || f.getAttribute('aria-required')==='true' ||
+    f.type==='password' || f===account)).map(f=>c.ids.get(f)).filter(Boolean);
+})(%d, %s)"""
 
 # Browser dialogs (alert/confirm/prompt) freeze the page and every input sent to it. They never block here:
 # confirm answers Cancel and prompt answers nothing (the safe choice: a "Delete?" is never confirmed), and each
@@ -97,6 +115,55 @@ class Browser:
         if response.get("exceptionDetails"):
             raise StalePage("Document changed during evaluation")
         return response.get("result", {}).get("value")
+
+    def empty_before_submit(self, action):
+        """P27: the observed fields a submit would send empty. `action` sends its form when it presses Enter in one of
+        the form's fields, or clicks the form's own submit button. A field counts when it is visible, enabled, empty,
+        and the form needs it: the browser counts it as required, it is a password field, or it is the field a
+        password form names its account by (the text, email or phone field just before its first password field).
+        -> their node ids, in the form's order ([] for any other action, or when nothing is missing)."""
+        if action.get("kind") not in {"submit", "click"} or type(action.get("node")) is not int:
+            return []
+        try:
+            found = self.evaluate(EMPTY_BEFORE_SUBMIT % (action["node"], json.dumps(action["kind"] == "submit")))
+        except (StalePage, RuntimeError):
+            return []  # the page changed: the action is checked again where it runs
+        return [n for n in found or [] if type(n) is int]
+
+    def evaluate_in_frame(self, frame_id, expression):
+        """P21: evaluate in one frame of this page that another site serves (the page's own scripts can't read it).
+        Chrome runs such a frame in its own process (a target of its own, attached for this call), or else inside
+        this page's process (an isolated world of that frame). -> the value, or None when the frame is gone."""
+        session = None
+        try:
+            # listing the frames that run in their own process makes Chrome ready to attach to them (attaching to one
+            # never listed before answered "no target with given id")
+            listed = cdp("Target.getTargets", filter=[{"type": "iframe"}], _response_timeout=IPC_TIMEOUT_S)
+            if not any(t.get("targetId") == frame_id for t in listed.get("targetInfos", [])):
+                raise RuntimeError("not a frame of its own process")
+            session = cdp("Target.attachToTarget", targetId=frame_id, flatten=True,
+                          _response_timeout=IPC_TIMEOUT_S)["sessionId"]
+            def call(method, **params):
+                return cdp(method, session_id=session, _response_timeout=IPC_TIMEOUT_S, **params)
+
+            context = {}
+        except RuntimeError:  # not a process of its own: the page's session reaches it
+            call = self.call
+            try:
+                context = {"contextId": self.call("Page.createIsolatedWorld", frameId=frame_id)["executionContextId"]}
+            except RuntimeError:
+                return None
+        try:
+            response = call("Runtime.evaluate", expression=expression, returnByValue=True, **context)
+            return None if response.get("exceptionDetails") else response.get("result", {}).get("value")
+        except RuntimeError:
+            return None
+        finally:
+            if session:
+                try:
+                    cdp("Target.detachFromTarget", sessionId=session)
+                except RuntimeError:
+                    pass
 
     def observe(self, screenshot=True):
         if getattr(self, "after_input", None):
@@ -218,21 +285,29 @@ def browser_operation(request):
                 }
                 return {x,y};
               };
+              // P22: the middle of one of its own boxes. A link whose words wrap onto two lines has its outer box's
+              // middle between the lines, on its parent: every click there was refused as covered (demoblaze's
+              // "Samsung galaxy s6", 40 decisions dropped in a row, 2026-11-18)
               const at=()=>{
-                const r=e.getBoundingClientRect(), o=offset(), lx=r.x+r.width/2, ly=r.y+r.height/2;
-                const x=lx+o.x, y=ly+o.y;
-                if (!r.width || !r.height || x<0 || y<0 || x>=innerWidth || y>=innerHeight) return null;
-                const frame=e.ownerDocument.defaultView.frameElement;
-                if (frame && document.elementFromPoint(x,y)!==frame && !frame.contains(document.elementFromPoint(x,y)))
-                  return null;  // the frame itself is covered on the page
-                return e.contains(e.ownerDocument.elementFromPoint(lx,ly)) ? {x,y} : null;
+                const o=offset(), frame=e.ownerDocument.defaultView.frameElement;
+                for (const r of [...e.getClientRects(), e.getBoundingClientRect()]) {
+                  const lx=r.x+r.width/2, ly=r.y+r.height/2, x=lx+o.x, y=ly+o.y;
+                  if (!r.width || !r.height || x<0 || y<0 || x>=innerWidth || y>=innerHeight) continue;
+                  if (frame && document.elementFromPoint(x,y)!==frame && !frame.contains(document.elementFromPoint(x,y)))
+                    continue;  // the frame itself is covered on the page there
+                  if (e.contains(e.ownerDocument.elementFromPoint(lx,ly))) return {x,y};
+                }
+                return null;
               };
               // Covered by something fixed on screen (a banner, a chat button): bring the target to the middle
               // of the view, where fixed bars at the edges no longer cover it, and check again.
-              let point=at();
-              if (!point) { e.scrollIntoView({block:'center',inline:'center'}); point=at(); }
+              let point=at(), scrolled=false;
+              if (!point) { e.scrollIntoView({block:'center',inline:'center'}); point=at(); scrolled=true; }
               if (!point) return null;
               const {x,y}=point;
+              // P26: where on the screen the input went, for the replay's cursor and focus ring
+              const o=offset(), b=e.getBoundingClientRect();
+              const shown={x, y, box:[b.x+o.x, b.y+o.y, b.width, b.height], view:[innerWidth, innerHeight], scrolled};
               if (action.kind==='select') {
                 if (e.tagName!=='SELECT' || ![...e.options].some(o=>o.value===action.value &&
                     !o.disabled && !o.closest('optgroup[disabled]'))) return null;
@@ -240,7 +315,7 @@ def browser_operation(request):
                 e.dispatchEvent(new Event('input',{bubbles:true}));
                 e.dispatchEvent(new Event('change',{bubbles:true}));
               }
-              return {x,y};
+              return shown;
             })(""" + json.dumps(action) + ")")
             if target is None:
                 if kind == "select":
@@ -272,6 +347,7 @@ def browser_operation(request):
                         modifiers=4 if sys.platform == "darwin" else 2,
                     )
                     call("Input.insertText", text=request["text"])
+            return {"executed": action["id"], "point": target}
         return {"executed": action["id"]}
 
     info = evaluate(READ_STATE)

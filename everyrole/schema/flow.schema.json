@@ -7,8 +7,29 @@
   "additionalProperties": false,
   "required": [
     "name",
-    "start",
-    "goal"
+    "start"
+  ],
+  "oneOf": [
+    {
+      "required": [
+        "goal"
+      ],
+      "not": {
+        "required": [
+          "steps"
+        ]
+      }
+    },
+    {
+      "required": [
+        "steps"
+      ],
+      "not": {
+        "required": [
+          "goal"
+        ]
+      }
+    }
   ],
   "properties": {
     "$schema": {
@@ -23,7 +44,26 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 160,
-      "description": "What this test proves, in one plain sentence (e.g. \"A paying user can create a new project\"). Shown to people; `name` stays the stable id."
+      "description": "What this test proves, in one plain sentence (e.g. \"A paying user can start a new film\"). Shown to people; `name` stays the stable id."
+    },
+    "importance": {
+      "enum": [
+        "critical",
+        "important",
+        "minor"
+      ],
+      "description": "How much this test matters (importance.py): critical = money and access (sign up, log in, pay, the core action), important = daily use, minor = content (blog, legal, docs). Missing = important. Critical tests are listed first and counted apart in the run summary."
+    },
+    "importance_why": {
+      "type": "string",
+      "maxLength": 200,
+      "description": "One line: why this level (written by the test writer)."
+    },
+    "importance_set_by": {
+      "enum": [
+        "person"
+      ],
+      "description": "Set when a person chose the level: exploring, rewrites and merges never change it."
     },
     "start": {
       "type": "string",
@@ -33,7 +73,16 @@
     "goal": {
       "type": "string",
       "minLength": 1,
-      "description": "Plain-English task for the agent."
+      "description": "Plain-English task for the agent (a one-goal test). A journey of several steps uses `steps` instead."
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 12,
+      "items": {
+        "$ref": "#/$defs/step"
+      },
+      "description": "A journey: steps done one after the other in the same browser, each judged by its own checks before the next starts (pass/fail still comes only from checks). The first step that fails stops the journey. Used by \"Test this change\"."
     },
     "values": {
       "type": "object",
@@ -84,6 +133,11 @@
       "default": false,
       "description": "Form-only mode: every request that would change data is blocked and recorded. The flow can fill and submit forms safely; use `tried_to_save` to check the submit really fired."
     },
+    "changes_password": {
+      "type": "boolean",
+      "default": false,
+      "description": "It changes its user type's own password for real (password_change.py): it types the new password from EVERYROLE_NEW_PASSWORD_<USER TYPE>, then the run signs in with it; not run where no new password was prepared (a CI run)."
+    },
     "ignore_saves": {
       "type": "array",
       "items": {
@@ -95,7 +149,7 @@
     },
     "expect": {
       "$ref": "#/$defs/checks",
-      "description": "Deterministic checks; all must pass. The only source of pass/fail."
+      "description": "Deterministic checks; all must pass. The only source of pass/fail. A journey (`steps`) puts its checks on each step instead."
     },
     "forbid": {
       "type": "array",
@@ -150,6 +204,28 @@
       "default": 3,
       "description": "When the agent gives up but the page continues below, scroll down and let it try again, up to this many times (the agent only sees what is on screen)."
     },
+    "found_on": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The environment exploring found this test on, when it wasn't production (e.g. staging). Such a test is tried once on production at its next deploy and promoted when it works there."
+    },
+    "deletes": {
+      "type": "boolean",
+      "description": "The journey presses Delete or Remove account (its change is about deleting): it destroys what it uses, so it runs only when its environment's schedule says (new_user_tests.py). Set by EveryRole."
+    },
+    "account": {
+      "type": "string",
+      "description": "The email of the run's account book row this journey uses (account_cleanup.py: each account is deleted and checked with its own log-in), instead of the role's newest one. Set by EveryRole."
+    },
+    "measured_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "How long it took in the change's run it was kept from (durations.py): its time until it runs as a test. Set by EveryRole."
+    },
+    "promoted_from": {
+      "type": "string",
+      "description": "Set when a test found on another environment worked on production and now runs everywhere."
+    },
     "run_on": {
       "type": "array",
       "description": "Environments this flow runs in (matched against --env). Empty = all.",
@@ -158,9 +234,224 @@
         "minLength": 1
       },
       "default": []
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "exploration"
+      ],
+      "properties": {
+        "exploration": {
+          "type": "integer",
+          "description": "The exploration (its job) that suggested this test."
+        },
+        "at": {
+          "type": "string",
+          "description": "When that exploration ended (ISO 8601)."
+        }
+      },
+      "description": "Where a test kept from a suggestion came from (explorations.py). Set by EveryRole when a person keeps it."
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "change"
+      ],
+      "properties": {
+        "change": {
+          "type": "integer",
+          "description": "The change that brought this test (Test this change)."
+        },
+        "journey": {
+          "type": "string",
+          "description": "Its journey's name in that change's plan."
+        },
+        "live": {
+          "type": "boolean",
+          "default": false,
+          "description": "Proven on production by a release: until then it runs on staging and previews only."
+        }
+      },
+      "description": "A change's journey kept as a test: it waits for a release to prove it on production (releases.py). Set by EveryRole, never shown as such."
+    },
+    "way_in": {
+      "type": "object",
+      "description": "Per kind of user (\"\" for the visitor): the page it starts on and the links it clicks to reach this test's page, as exploring saw them (way_in.py). The test then runs as those clicks, then its own goal and checks: never by opening its page's address.",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "entry",
+          "clicks"
+        ],
+        "properties": {
+          "entry": {
+            "type": "string",
+            "description": "Where this kind of user starts: \"/\", or \"part:/x\"."
+          },
+          "clicks": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 5,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "label",
+                "to"
+              ],
+              "properties": {
+                "label": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "to": {
+                  "type": "string"
+                },
+                "menu": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "The closed menu (an account menu) the link is in: it is opened before the click."
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "$defs": {
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "expect"
+      ],
+      "anyOf": [
+        {
+          "required": [
+            "goal"
+          ]
+        },
+        {
+          "required": [
+            "reload"
+          ]
+        },
+        {
+          "required": [
+            "open_email"
+          ]
+        },
+        {
+          "required": [
+            "wait_s"
+          ]
+        }
+      ],
+      "properties": {
+        "goal": {
+          "type": "string",
+          "minLength": 1,
+          "description": "What the agent does in this step, in plain English."
+        },
+        "expect": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/check"
+          },
+          "description": "Checks that must hold once this step is done (judged on a settled page). Empty only for a step proven by the next one (checked_by_next)."
+        },
+        "reload": {
+          "type": "boolean",
+          "default": false,
+          "description": "Reload the page after this step's goal (or as the whole step, with no goal) before judging its checks: what the page shows survives a reload."
+        },
+        "sign_in_as": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{0,31}$",
+          "description": "In this step the visitor signs in as this kind of user: its sign-in values (everyrole.config.json) become available to the agent; the journey keeps that session for the next steps."
+        },
+        "sign_up": {
+          "type": "boolean",
+          "default": false,
+          "description": "In this step the visitor creates a brand-new account: a new identity for this run (its own inbox address, a random password, a name) becomes available to the agent as new_account_email, new_account_password and new_account_name. Needs EveryRole's inbox (EveryRole's own browsers)."
+        },
+        "open_email": {
+          "type": "boolean",
+          "default": false,
+          "description": "Before this step's goal, wait for the next email to the journey's new account, open its action link (confirm, verify, sign in...) in the same browser, and give its code to the agent as email_code when it has one. Needs a step with sign_up before it."
+        },
+        "email_wait_s": {
+          "type": "integer",
+          "minimum": 10,
+          "maximum": 900,
+          "default": 180,
+          "description": "How long open_email waits for the email."
+        },
+        "wait_s": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3600,
+          "default": 0,
+          "description": "Slow work (a film being made, a report, an export): after this step's goal (or as the whole step, with no goal), wait up to this many seconds for its checks to hold, re-reading the page without acting (no model, no cost), reloading it each time when the step has reload."
+        },
+        "email_if_needed": {
+          "type": "boolean",
+          "default": false,
+          "description": "With open_email: wait for the email only when this step's checks don't hold yet (a sign-in that needs no email link goes on at once)."
+        },
+        "checked_by_next": {
+          "type": "boolean",
+          "default": false,
+          "description": "A step with no checks of its own whose proof is the next step (asking for a sign-in link: the email that arrives). It passes when the agent finished without getting stuck."
+        },
+        "click": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["label", "to"],
+          "properties": {
+            "label": {"type": "string"},
+            "to": {"type": "string"},
+            "menu": {"type": "string"}
+          },
+          "description": "A step of a test's way in: the link it clicks, by its words and the page it leads to. EveryRole clicks that link itself (scrolled into view, after answering a cookie banner), and says so when something covers it."
+        },
+        "submit": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["label"],
+          "properties": {"label": {"type": "string"}},
+          "description": "A form test's own button, by its words: EveryRole presses the button with those words inside a form (the one filled in first), never a same-named link elsewhere on the page."
+        },
+        "unsure": {
+          "type": "boolean",
+          "default": false,
+          "description": "Its checks are words EveryRole never saw on the app (the planner's guess, asked about): when they fail, the test is wrong, not the app, and the run says what the page showed instead."
+        }
+      },
+      "if": {
+        "not": {
+          "required": [
+            "checked_by_next"
+          ],
+          "properties": {
+            "checked_by_next": {
+              "const": true
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "expect": {
+            "$ref": "#/$defs/checks"
+          }
+        }
+      }
+    },
     "check": {
       "type": "object",
       "minProperties": 1,
@@ -200,10 +491,52 @@
           "const": true,
           "description": "Passes when the page shows no password field: signing in has really finished."
         },
+        "signin_form_shown": {
+          "type": "string",
+          "minLength": 1,
+          "format": "regex",
+          "description": "Passes when the address matches this regex (a sign-in page) and the page asks for a password: signed out, told from the page itself."
+        },
+        "count": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "text"
+          ],
+          "minProperties": 2,
+          "properties": {
+            "text": {
+              "type": "string",
+              "minLength": 1
+            },
+            "equals": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "at_least": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "at_most": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "description": "How many times a text appears on the page: {\"text\": \"Your film\", \"equals\": 1} (also at_least, at_most). Proves something happened once and only once, especially after a reload."
+        },
         "tried_to_save": {
           "type": "string",
           "minLength": 1,
           "description": "Passes when the page tried to save to an address containing this text, or to any address for \"*\" (needs block_writes: the request is blocked, so nothing is saved). Background traffic in ignore_saves never counts."
+        },
+        "kept": {
+          "const": true,
+          "description": "Passes when everything the journey typed in its earlier steps is still on the page (nothing lost after signing up or logging in partway)."
+        },
+        "email_received": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Passes when an email to the journey's new account arrived whose subject or text contains this (the welcome or confirmation email)."
         }
       }
     },

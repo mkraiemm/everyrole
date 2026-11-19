@@ -21,7 +21,7 @@ def test_missing_run_key_blocks_but_missing_extras_only_warn():
     text, code = doctor.report(checks)
     assert code == 1
     assert "FAIL  Model keys for running tests: missing TYPESAFE_API_KEY" in text
-    assert "warn  Model keys for typing free text (optional)" in text and "warn  ffmpeg" in text
+    assert "warn  Model keys for exploring and writing tests" in text and "warn  ffmpeg" in text
     assert "FAIL  Model provider reachable" in text
 
 

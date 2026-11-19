@@ -6,6 +6,23 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `everyrole ci --app <app>`: run an app's tests kept in EveryRole in your own CI (GitLab, GitHub, any CI),
+  with each test login read from masked CI variables that never leave the job; model calls go through
+  EveryRole with the API key; results uploaded, written as `junit.xml`, and commented on the merge or pull
+  request with `--comment`. GitLab job template: `everyrole/ci_files/everyrole.gitlab-ci.yml`.
+- GitHub Action: `app`, `api-key` and `everyrole-url` inputs for the same connected mode.
+- Journeys (`steps`), ways in (`way_in`), test importance, flaky tests set aside, new checks (`count`, `kept`,
+  `signin_form_shown`, `email_received`), per-user-type sign-in pages and login links. See
+  [the reference](docs/flow-spec.md).
+- Extras: `everyrole[replays]` (Pillow: the cursor drawn in replays), `everyrole[login-links]`.
+
+### Changed
+
+- `everyrole doctor` makes one tiny call to each configured model, so a model the provider no longer offers
+  is found before a run.
+
 ## [0.1.0] - 2026-09-28
 
 First public release.

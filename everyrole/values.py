@@ -30,11 +30,14 @@ class ValueChooser:
         return f"Type the value named '{name}': {self.values[name]}"
 
     def __call__(self, context, action, _page):
-        """Engine `text_provider` hook -> (text, helper)."""
+        """Engine `text_provider` hook -> (text, helper). A password field never gets text written by a model: only
+        one of the named values (the write path refuses it)."""
+        secret_field = bool(context.get("field", {}).get("secret"))
         if not self.values:
             return self._write(context)
         options = {name: self._describe(name) for name in self.values}
-        options[WRITE] = "None of the named values fits this field; write new text from the goal."
+        if not secret_field:
+            options[WRITE] = "None of the named values fits this field; write new text from the goal."
         body = {
             "model": typesafe_model(),
             "state": {

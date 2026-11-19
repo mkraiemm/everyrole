@@ -1,7 +1,7 @@
 """How much of the computer a test job may use: a memory cap and a CPU cap, enforced by the operating system.
 
-A test job (`everyrole run` or `everyrole signin`) sets up, before it starts any browser, a container the OS
-enforces, and every worker and every Chrome it starts runs inside it (`Limits.launch` / `Limits.run`):
+A test job (`everyrole run`) sets up, before it starts any browser, a container
+the OS enforces, and every worker and every Chrome it starts runs inside it (`Limits.launch` / `Limits.run`):
 
   Windows   job objects: committed memory and a hard CPU rate. Each browser and worker starts suspended, outside
             whatever job started EveryRole when it may (a terminal's job may let children silently break away, which
@@ -29,6 +29,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import heartbeat, processes
 from .spec import _defaults, schema
 
 SAMPLE_S = 1.0  # how often a held-back worker looks again, and the shortest window a CPU rate is measured over
@@ -396,17 +397,29 @@ class Limits:
         """subprocess.Popen, inside the caps."""
         return self.container.launch(args, **popen)
 
-    def run(self, args, *, timeout=None, input=None, **popen):
-        """subprocess.run with captured output, inside the caps. Raises TimeoutExpired after killing it."""
+    def run(self, args, *, timeout=None, input=None, quiet=None, **popen):
+        """subprocess.run with captured output, inside the caps. Whatever the command started is stopped with it,
+        however it ended. Raises TimeoutExpired after stopping it and everything it started. `quiet`: (heartbeat
+        file, seconds): also stopped once that file went quiet for longer (heartbeat.py: a test frozen on one call)."""
         process = self.launch(args, stdin=subprocess.PIPE if input is not None else None,
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, **popen)
-        try:
-            out, err = process.communicate(input, timeout=timeout)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.communicate()
-            raise
-        return subprocess.CompletedProcess(args, process.returncode, out, err)
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, **{**processes.own_group(), **popen})
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            left = None if deadline is None else max(0.0, deadline - time.monotonic())
+            wait = left if quiet is None else min(WATCH_S, left if left is not None else WATCH_S)
+            try:
+                out, err = process.communicate(input, timeout=wait)
+                processes.end_group(process)  # what it started and left running (a browser daemon it lost) goes too
+                return subprocess.CompletedProcess(args, process.returncode, out, err)
+            except subprocess.TimeoutExpired:
+                input = None  # already sent
+                over = deadline is not None and time.monotonic() >= deadline
+                if over or (quiet is not None and heartbeat.quiet_for(quiet[0]) > quiet[1]):
+                    _stop(process)
+                    raise subprocess.TimeoutExpired(args, timeout) from None
+            except BaseException:  # stopped itself (Ctrl-C, the job stopped): its group of its own goes with it
+                _stop(process)
+                raise
 
     def describe(self):
         held = [k for k, on in self.container.enforced.items() if on]
@@ -426,6 +439,25 @@ class Limits:
         if g.held:
             text += f", {g.held} held back until there was room"
         return text
+
+
+WATCH_S = 5  # how often a watched process's heartbeat is looked at
+KILL_WAIT_S = 15  # after stopping it: what is left to read of its output, then it is let go
+
+
+def _stop(process):
+    """Stops a process and its group, then reads what is left of its output for a short while only: a process it
+    started that outlived it may hold its output open, and waiting for that without a limit froze the whole run."""
+    processes.end_group(process)
+    try:
+        process.communicate(timeout=KILL_WAIT_S)
+    except (subprocess.TimeoutExpired, ValueError, OSError):
+        for pipe in (process.stdout, process.stderr):
+            try:
+                if pipe:
+                    pipe.close()
+            except OSError:
+                pass
 
 
 _active = None

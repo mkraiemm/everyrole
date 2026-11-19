@@ -1,14 +1,27 @@
 name: "everyrole: does my app still work?"
-description: "Plain-English end-to-end checks on every deploy. Flows live in your repo as JSON; bring your own AI key."
+description: "Plain-English end-to-end checks on every deploy. Flows live in your repo as JSON (bring your own AI key), or in EveryRole with your test logins only in GitHub secrets."
 author: "everyrole"
 branding:
   icon: "check-circle"
   color: "green"
 
 inputs:
+  app:
+    description: "Connected mode: your app's name in EveryRole (its address: /p/<app>). Its tests run here, with each kind of user's login read from this step's env (EVERYROLE_LOGIN_<KIND>_USERNAME / _PASSWORD): logins never leave GitHub. Empty: run the flows in this repository."
+    required: false
+    default: ""
+  api-key:
+    description: "Connected mode: a workspace API key from EveryRole (pass it from a secret: secrets.EVERYROLE_API_KEY)."
+    required: false
+    default: ""
+  everyrole-url:
+    description: "Connected mode: EveryRole's address."
+    required: false
+    default: "https://everyrole.dev"
   base-url:
-    description: "Deployed URL to test (e.g. the Vercel preview URL). Available to flows as {{BASE_URL}}."
-    required: true
+    description: "Deployed URL to test (e.g. the Vercel preview URL). Available to flows as {{BASE_URL}}. Required without app; with app, empty tests the app's own address."
+    required: false
+    default: ""
   flows:
     description: "Flow files or directories, space-separated, relative to the repository root."
     required: false
@@ -18,7 +31,7 @@ inputs:
     required: false
     default: ""
   environment:
-    description: "Only run flows whose run_on includes this (flows without run_on always run)."
+    description: "Only run flows whose run_on includes this (flows without run_on always run). With app: preview or empty lets EveryRole tell from the address."
     required: false
     default: "preview"
   parallel:
@@ -57,7 +70,7 @@ outputs:
     description: "passed | failed (the app failed a check) | not-checked (machine problem or setup error)"
     value: ${{ steps.run.outputs.result }}
   exit-code:
-    description: "Exit code of everyrole run: 0 passed, 1 app failure, 2 nothing could be checked."
+    description: "Exit code of everyrole run (or everyrole ci): 0 passed, 1 app failure, 2 nothing could be checked."
     value: ${{ steps.run.outputs.exit-code }}
 
 runs:
@@ -115,12 +128,15 @@ runs:
       id: run
       shell: bash
       env:
+        INPUT_APP: ${{ inputs.app }}
         INPUT_BASE_URL: ${{ inputs.base-url }}
         INPUT_FLOWS: ${{ inputs.flows }}
         INPUT_CONFIG: ${{ inputs.config }}
         INPUT_ENVIRONMENT: ${{ inputs.environment }}
         INPUT_PARALLEL: ${{ inputs.parallel }}
         INPUT_VIDEOS: ${{ inputs.videos }}
+        EVERYROLE_API_KEY: ${{ inputs.api-key }}
+        EVERYROLE_URL: ${{ inputs.everyrole-url }}
         PYTHONUTF8: "1"
       run: |
         report="$RUNNER_TEMP/everyrole-report"
@@ -129,10 +145,24 @@ runs:
         if [ -n "$INPUT_CONFIG" ]; then options+=(--config "$INPUT_CONFIG"); fi
         if [ "$INPUT_VIDEOS" = "true" ]; then options+=(--videos); fi
         set +e
-        # shellcheck disable=SC2086  # flows is an intentional space-separated list
-        everyrole run $INPUT_FLOWS --base-url "$INPUT_BASE_URL" --env "$INPUT_ENVIRONMENT" \
-          --parallel "$INPUT_PARALLEL" --output "$report" "${options[@]}"
-        status=$?
+        if [ -n "$INPUT_APP" ]; then
+          # connected: the app's tests come from EveryRole; the logins are this step's env and never leave this job
+          ci_options=()
+          if [ -n "$INPUT_BASE_URL" ]; then ci_options+=(--base-url "$INPUT_BASE_URL"); fi
+          if [ -n "$INPUT_ENVIRONMENT" ] && [ "$INPUT_ENVIRONMENT" != "preview" ]; then
+            ci_options+=(--env "$INPUT_ENVIRONMENT")
+          fi
+          everyrole ci --app "$INPUT_APP" --output "$report" "${ci_options[@]}"
+          status=$?
+        elif [ -z "$INPUT_BASE_URL" ]; then
+          echo "::error title=everyrole::Give base-url (the deploy to test), or app (your app in EveryRole)."
+          status=2
+        else
+          # shellcheck disable=SC2086  # flows is an intentional space-separated list
+          everyrole run $INPUT_FLOWS --base-url "$INPUT_BASE_URL" --env "$INPUT_ENVIRONMENT" \
+            --parallel "$INPUT_PARALLEL" --output "$report" "${options[@]}"
+          status=$?
+        fi
         set -e
         echo "exit-code=$status" >> "$GITHUB_OUTPUT"
         case "$status" in

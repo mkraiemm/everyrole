@@ -1,0 +1,6 @@
+/* The replay cursor's colors (everyrole/replay_cursor.py reads them with design_tokens.colors). */
+:root {
+  --replay-cursor: #fff;
+  --replay-cursor-edge: #13201a;
+  --replay-focus: #4FBF93;
+}

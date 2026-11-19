@@ -68,7 +68,7 @@ jobs:
 
 | Input | Default | Meaning |
 |---|---|---|
-| `base-url` | required | The deployed URL to test; `{{BASE_URL}}` in flows |
+| `base-url` | *(empty)* | The deployed URL to test; `{{BASE_URL}}` in flows. Required without `app` |
 | `flows` | `flows` | Flow files or directories, space-separated, relative to the repository root |
 | `config` | *(empty)* | Path to `everyrole.config.json`. Empty = `./everyrole.config.json` if it exists |
 | `environment` | `preview` | Only flows whose `run_on` includes this run (flows without `run_on` always run) |
@@ -78,6 +78,9 @@ jobs:
 | `fail-on-machine-problem` | `true` | When *nothing* could be checked (machine problem), fail the job (`true`) or only warn (`false`). Either way it is labelled as a machine problem, never as an app failure |
 | `artifact-name` | `everyrole-report` | Name of the uploaded artifact; set a unique one when several jobs use the action |
 | `python-version` | `3.12` | Python used to run EveryRole |
+| `app` | *(empty)* | Tests kept in EveryRole: your app's name there. The action then runs `everyrole ci` (its tests, with each login from this step's `env`: `EVERYROLE_LOGIN_<KIND>_USERNAME` / `_PASSWORD`) instead of the flows in the repository. See [Run in your own CI](../README.md#run-in-your-own-ci) |
+| `api-key` | *(empty)* | With `app`: a workspace API key from EveryRole (`${{ secrets.EVERYROLE_API_KEY }}`) |
+| `everyrole-url` | `https://everyrole.dev` | With `app`: EveryRole's address |
 
 ## Outputs
 

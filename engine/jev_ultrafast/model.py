@@ -3,7 +3,9 @@
 import json
 import math
 import os
+import re
 import time
+from functools import lru_cache
 
 import httpx
 
@@ -15,6 +17,12 @@ CLIENT = httpx.Client(http2=True, timeout=25)
 # The embedding runner registers secret redaction here; it is the single outbound choke point.
 OUTBOUND_FILTERS = []
 
+# A file the embedding app reads after the process ends: one JSON line per model answer worth knowing (every error,
+# and each model's first success in this process), so a model the provider no longer offers can be told to whoever
+# runs the app. Unset: nothing is written.
+MODEL_LOG_ENV = "JEV_MODEL_LOG"
+_ANSWERED = set()  # models already noted as answering in this process
+
 
 def typesafe_url():
     """Jev endpoint: TypeSafe directly by default, or any compatible gateway via TYPESAFE_URL."""
@@ -23,6 +31,14 @@ def typesafe_url():
 
 def typesafe_model():
     return os.environ.get("TYPESAFE_MODEL", "jev-latest")
+
+
+class ModelRefused(RuntimeError):
+    """The provider answered with an error status; nothing was executed."""
+
+    def __init__(self, status):
+        super().__init__(f"Model provider returned HTTP {status}; no action executed.")
+        self.status = status
 
 
 def post_json(url, key, body, timeout=None):
@@ -35,15 +51,43 @@ def post_json(url, key, body, timeout=None):
         try:
             response = CLIENT.post(url, json=body, headers={"Authorization": f"Bearer {key}"},
                                    **({} if timeout is None else {"timeout": timeout}))
+        except (httpx.ConnectError, httpx.RemoteProtocolError, httpx.ReadError, httpx.WriteError):
+            if attempt < 2:  # a dropped or reset connection (many calls share one HTTP/2 connection): try again
+                time.sleep(0.5 * 2**attempt)
+                continue
+            raise RuntimeError("Model connection failed; no action executed.") from None
         except httpx.HTTPError:
             raise RuntimeError("Model connection failed; no action executed.") from None
+        _note(body, response)
         if response.status_code in {429, 529, 503} and attempt < 2:
             time.sleep(0.5 * 2**attempt)
             continue
         if response.is_error:
-            raise RuntimeError(f"Model provider returned HTTP {response.status_code}; no action executed.")
+            raise ModelRefused(response.status_code)
         return response.json()
     raise RuntimeError("Model unavailable")
+
+
+def _note(body, response):
+    """One line in the model log (MODEL_LOG_ENV): which model, the HTTP status, and the provider's own words when it
+    refused. A failure to write never touches the call."""
+    path = os.environ.get(MODEL_LOG_ENV)
+    model = body.get("model") if isinstance(body, dict) else None
+    if not path or not isinstance(model, str) or not model:
+        return
+    if not response.is_error and model in _ANSWERED:
+        return
+    line = {"model": model, "status": response.status_code, "at": time.time(),
+            "said": response.text[:500] if response.is_error else ""}
+    if response.is_error:  # how big the refused request was: a request over the model's window says so (P24)
+        line["request_chars"] = len(json.dumps(body, ensure_ascii=False))
+    try:
+        with open(path, "a", encoding="utf-8") as out:
+            out.write(json.dumps(line) + "\n")
+    except OSError:
+        return
+    if not response.is_error:
+        _ANSWERED.add(model)
 
 
 def validate_choice(answer, ids):
@@ -60,7 +104,7 @@ def validate_choice(answer, ids):
     except (KeyError, TypeError, ValueError):
         valid = False
     if not valid:
-        raise ValueError("Invalid TypeSafe response; no action executed.")
+        raise ValueError(INVALID_ANSWER)
     return answer
 
 
@@ -79,7 +123,7 @@ def action_space(actions):
         if node not in indices:
             index = str(len(elements) + 1)
             indices[node] = index
-            element = {k: action[k] for k in ("role", "value", "checked", "selected", "expanded") if k in action}
+            element = {k: action[k] for k in ("role", "value", "checked", "selected", "expanded", "pressed") if k in action}
             element.update(index=index, label=action["label"].split(" → ")[0], operations=[])
             if kind == "select":
                 element["value"] = action.get("current_value", "")
@@ -118,7 +162,48 @@ def _scroll_note(state):
     return note
 
 
+INVALID_ANSWER = "Invalid TypeSafe response; no action executed."
+CHOOSE_TRIES = 2  # an invalid answer is asked again once (nothing was executed yet)
+
+
 def choose(state, goal, history):
+    """One decision. An answer that fails validation (malformed probabilities) is asked once more before giving up:
+    nothing has been executed, and a single bad answer must not end a whole test."""
+    for attempt in range(CHOOSE_TRIES):
+        try:
+            return _choose_once(state, goal, history)
+        except ValueError as exc:
+            if str(exc) != INVALID_ANSWER or attempt == CHOOSE_TRIES - 1:
+                raise
+
+
+SHRINK_TRIES = 3  # the request as built, then two smaller ones
+
+
+def _decision_body(state, elements, questions, history, smaller=0):
+    """The decision request. A page too big for the model's context window (automationexercise.com's sign-up form:
+    HTTP 400) is sent smaller on each try: the page's text halved, then the dropdown options left out of the element
+    list (each option is still a choice in select_target), then fewer past actions. What the model may choose never
+    shrinks: every target stays."""
+    page = {k: state[k] for k in ("url", "title", "text")}
+    if smaller:
+        page["text"] = page["text"][: len(page["text"]) // (2 ** smaller)]
+        elements = [{k: v for k, v in e.items() if k != "options"} for e in elements]
+    return {
+        "model": typesafe_model(),
+        "state": {
+            "page": {**page, **_scroll_note(state)},
+            "elements": elements,
+            "recent_actions": [
+                {k: h.get(k) for k in ("action", "kind", "text", "page_changed")}
+                for h in history[-(10 // (smaller + 1)):]
+            ],
+        },
+        "questions": questions,
+    }
+
+
+def _choose_once(state, goal, history):
     elements, targets, controls = action_space(state["actions"])
     labels = {
         "CLICK": "Click an element, button, menu option, autocomplete suggestion, or calendar day.",
@@ -138,25 +223,22 @@ def choose(state, goal, history):
                 index: {
                     "element": f"[{index}] {a['label']}",
                     "current_value": a.get("current_value", a.get("value", "")),
-                    **{k: a[k] for k in ("role", "checked", "selected", "expanded") if k in a},
+                    **{k: a[k] for k in ("role", "checked", "selected", "expanded", "pressed") if k in a},
                 }
                 for index, a in candidates.items()
             },
             "instructions": {"goal": goal, "operation": operation, "rules": [NEXT_ACTION, TARGET]},
         }
-    body = {
-        "model": typesafe_model(),
-        "state": {
-            "page": {**{k: state[k] for k in ("url", "title", "text")}, **_scroll_note(state)},
-            "elements": elements,
-            "recent_actions": [
-                {k: h.get(k) for k in ("action", "kind", "text", "page_changed")} for h in history[-10:]
-            ],
-        },
-        "questions": questions,
-    }
     started = time.perf_counter()
-    result = post_json(typesafe_url(), os.environ["TYPESAFE_API_KEY"], body)
+    body, result = None, None
+    for smaller in range(SHRINK_TRIES):  # P24: a request over the model's window is refused (400): ask it smaller
+        body = _decision_body(state, elements, questions, history, smaller)
+        try:
+            result = post_json(typesafe_url(), os.environ["TYPESAFE_API_KEY"], body)
+            break
+        except ModelRefused as exc:
+            if exc.status != 400 or smaller == SHRINK_TRIES - 1:
+                raise
     operation_answer = validate_choice(result["answers"].get("operation", {}), operations)
     operation = operation_answer["choice"]
     target = None
@@ -191,48 +273,107 @@ def choose(state, goal, history):
 def field_context(goal, action, page, history):
     return {
         "goal": goal,
-        "field": {k: action.get(k) for k in ("label", "role", "value")},
+        "field": {k: action.get(k) for k in ("label", "role", "value", "secret") if k in action},
         "page": {"title": page["title"], "text": page["text"][:6000]},
         "recent_actions": [{k: h.get(k) for k in ("action", "text")} for h in history[-6:]],
     }
 
 
+class SecretField(ValueError):
+    """A password field: the text model never writes into one (only a named value may be typed there)."""
+
+
+# the typing job's slots, tried in this order (everyrole.model_check.JOB_SETTINGS["text"]); an empty one is skipped
+TEXT_MODEL_SLOTS = (("primary", "TEXT_MODEL"), ("backup", "TEXT_MODEL_BACKUP"), ("backup_2", "TEXT_MODEL_BACKUP_2"))
+
+
+def text_models(environ):
+    """[(slot, model)]: the main typing model, then backup 1 and backup 2; empty slots and repeats left out."""
+    out, seen = [], set()
+    for slot, name in TEXT_MODEL_SLOTS:
+        model = (environ.get(name) or "").strip()
+        if model and model not in seen:
+            seen.add(model)
+            out.append((slot, model))
+    return out
+
+
 def field_text(context):
+    if context.get("field", {}).get("secret"):
+        raise SecretField("This is a password field: EveryRole types only a named value (a test account's password) "
+                          "there, never text from a model. Give this kind of user a value for it.")
     key = os.environ.get("TEXT_MODEL_API_KEY")
     if not key:
         raise ValueError("TYPE_TEXT needs TEXT_MODEL_API_KEY; no text is hardcoded or guessed by the executor.")
-    base = os.environ.get("TEXT_MODEL_BASE_URL", "https://api.deepseek.com/v1").rstrip("/")
-    model = os.environ.get("TEXT_MODEL", "deepseek-chat")
-    reasoning = {"thinking": {"type": "disabled"}} if "api.deepseek.com/" in base else {"reasoning": {"effort": "low"}}
-    if os.environ.get("TEXT_MODEL_REASONING") == "none":
-        reasoning = {"reasoning": {"enabled": False}}
-    started = time.perf_counter()
-    result = post_json(
-        base + "/chat/completions",
-        key,
-        {
+    base = (os.environ.get("TEXT_MODEL_BASE_URL") or "").rstrip("/")
+    models = text_models(os.environ)
+    if not base or not models:  # no model or gateway is assumed: the deployment names them
+        raise ValueError("TYPE_TEXT needs TEXT_MODEL_BASE_URL and TEXT_MODEL; no model is assumed by the executor.")
+    messages = [{"role": "system", "content": TEXT_VALUE}, {"role": "user", "content": json.dumps(context)}]
+    failures = []
+    for slot, model in models:  # backup 1, then backup 2, takes over when the one before fails: a test never stops
+        started = time.perf_counter()
+        try:
+            result = post_json(base + "/chat/completions", key,
+                               {"model": model, "max_tokens": 1024, "messages": messages,
+                                **request_options(base, model)})
+            value = _text_value(result)
+        except (RuntimeError, ValueError) as exc:
+            failures.append(f"{model}: {exc}")
+            continue
+        return value, {
             "model": model,
-            "max_tokens": 1024,
-            "response_format": {"type": "json_object"},
-            **reasoning,
-            "messages": [
-                {"role": "system", "content": TEXT_VALUE},
-                {
-                    "role": "user",
-                    "content": json.dumps(context),
-                },
-            ],
-        },
-    )
+            "slot": slot,
+            "backup": slot != "primary",
+            "latency_ms": round((time.perf_counter() - started) * 1000),
+            "usage": result.get("usage", {}),
+        }
+    label = str(context.get("field", {}).get("label") or "").strip()
+    raise ValueError("Text helper returned no valid field value" + (f" for “{label}”" if label else "")
+                     + "; nothing typed. " + " | ".join(failures))
+
+
+def _text_value(result):
+    content = result["choices"][0]["message"]["content"] or ""
     try:
-        output = json.loads(result["choices"][0]["message"]["content"])
-        value = output["text"]
-        if set(output) != {"text"} or not isinstance(value, str) or not value.strip() or len(value) > 2000:
-            raise ValueError()
-    except (ValueError, KeyError, TypeError):
-        raise ValueError("Text helper returned no valid field value; nothing typed.") from None
-    return value, {
-        "model": model,
-        "latency_ms": round((time.perf_counter() - started) * 1000),
-        "usage": result.get("usage", {}),
-    }
+        output = json.loads(content)
+    except (TypeError, json.JSONDecodeError):
+        match = re.search(r"\{.*\}", content, re.S)  # a model without JSON mode may wrap its answer in prose
+        output = json.loads(match.group(0)) if match else None
+    value = output.get("text") if isinstance(output, dict) else None
+    if output == {"text": None}:  # the answer the prompt asks for when the goal gives no value for this field
+        raise ValueError("no value for this field in the test's goal or values")
+    if not isinstance(output, dict) or set(output) != {"text"} or not isinstance(value, str) or not value.strip() \
+            or len(value) > 2000:
+        raise ValueError("no valid field value")
+    return value
+
+
+# ---------------------------------------------------------------------------------------------- model capabilities
+
+@lru_cache(maxsize=4)
+def _gateway_models(base):
+    """{model id: set of tags} from the gateway's own model list ({} when it can't say)."""
+    try:
+        response = CLIENT.get(base.rstrip("/") + "/models", timeout=15)
+        response.raise_for_status()
+        return {m["id"]: set(m.get("tags") or []) for m in response.json().get("data", [])}
+    except (httpx.HTTPError, ValueError, KeyError):
+        return {}
+
+
+def request_options(base, model, environ=None):
+    """The optional request fields this model accepts, from the gateway's list of its abilities: JSON mode only for
+    models that support structured output, the reasoning switch only for reasoning models. A model the list doesn't
+    describe gets the request as before."""
+    env = os.environ if environ is None else environ
+    tags = _gateway_models(base).get(model)
+    options = {}
+    if tags is None or "structured-output" in tags:
+        options["response_format"] = {"type": "json_object"}
+    if "api.deepseek.com/" in base:
+        options["thinking"] = {"type": "disabled"}
+    elif tags is None or "reasoning" in tags:
+        options["reasoning"] = ({"enabled": False} if env.get("TEXT_MODEL_REASONING") == "none"
+                                else {"effort": "low"})
+    return options
